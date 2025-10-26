@@ -1,0 +1,37 @@
+1) set up language grammatical rules & syntax. Shouldnt be too hard since its in english, but we might have to make choices, such as do we accept antonyms and how to define a function and whatnot
+
+2) Set up lexer and LLVM
+
+steps(according to ai): 
+
+Define syntax and semantics (grammar, operators, control flow, data types):
+Start with a simple language concept (like an expression calculator or a tiny functional language).
+
+Lexical Analysis (Lexing):
+
+Write a lexer to tokenize the source code (split the code into meaningful tokens like identifiers, keywords, operators).
+This can be done using simple string parsing or lexer generators.
+
+Parsing:
+
+Implement a parser to convert tokens into an Abstract Syntax Tree (AST).
+Use recursive descent parsing or operator precedence parsing for expressions.
+The AST is a structured representation of the source code.
+
+Semantic Analysis:
+Check for semantic errors (e.g., type checking, variable declarations).
+collect symbol tables and scope information.
+
+LLVM IR Generation:
+Traverse the AST and generate LLVM IR instructions using LLVM's API.
+LLVM IR is a low-level, SSA-based intermediate language.
+Use LLVM classes such as llvm::Module, llvm::IRBuilder, and llvm::LLVMContext in C++ to create modules, functions, and instructions.
+You can generate instructions for arithmetic, memory operations, control flow statements (if, loops), and function calls.
+
+JIT or Static Compilation:
+LLVM supports Just-In-Time (JIT) compilation allowing immediate execution of IR.
+Alternatively, generate object code or executable files using LLVM's optimization and code generation passes.
+
+Extending the Language:
+Add support for user-defined variables, functions, control flow, and custom operators.
+Implement features like conditionals (if), loops (for), and more complex types (arrays, structs).
