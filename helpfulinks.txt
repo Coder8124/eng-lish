@@ -1,0 +1,9 @@
+https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html
+
+https://www.perplexity.ai/search/how-to-build-a-language-which-6PrpO2wkSEC6uFEWcgTi8g
+
+https://pgrandinetti.github.io/compilers/page/how-to-build-a-new-programming-language/
+
+https://www.reddit.com/r/learnprogramming/comments/kjxytb/creating_your_own_programming_language/
+
+https://medium.com/@abiliu018/how-i-created-my-own-programming-language-from-scratch-9b99fa0a802b
