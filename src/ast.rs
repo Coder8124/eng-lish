@@ -12,6 +12,56 @@ pub enum Type {
     Tuple(Vec<Type>),     // fixed list
     Set(Box<Type>),       // unique collection
     Void,           // for functions that don't return
+    Class(String),  // user-defined class type
+}
+
+/// A function/method parameter
+#[derive(Debug, Clone)]
+pub struct Parameter {
+    pub name: String,
+    pub param_type: Type,
+}
+
+/// Function definition
+#[derive(Debug, Clone)]
+pub struct FunctionDef {
+    pub name: String,
+    pub parameters: Vec<Parameter>,
+    pub return_type: Type,
+    pub body: Vec<Statement>,
+}
+
+/// A class property
+#[derive(Debug, Clone)]
+pub struct Property {
+    pub name: String,
+    pub prop_type: Type,
+}
+
+/// Constructor definition
+#[derive(Debug, Clone)]
+pub struct Constructor {
+    pub parameters: Vec<Parameter>,
+    pub body: Vec<Statement>,
+}
+
+/// A method (function within a class)
+#[derive(Debug, Clone)]
+pub struct Method {
+    pub name: String,
+    pub parameters: Vec<Parameter>,
+    pub return_type: Type,
+    pub body: Vec<Statement>,
+}
+
+/// Class definition
+#[derive(Debug, Clone)]
+pub struct ClassDef {
+    pub name: String,
+    pub parent: Option<String>,  // For inheritance
+    pub properties: Vec<Property>,
+    pub constructor: Option<Constructor>,
+    pub methods: Vec<Method>,
 }
 
 impl std::fmt::Display for Type {
@@ -35,6 +85,7 @@ impl std::fmt::Display for Type {
             }
             Type::Set(inner) => write!(f, "unique collection of {}", inner),
             Type::Void => write!(f, "nothing"),
+            Type::Class(name) => write!(f, "{}", name),
         }
     }
 }
@@ -110,6 +161,31 @@ pub enum Expr {
         collection: Box<Expr>,
         index: Box<Expr>,
     },
+
+    /// Function call: Call add with 5 and 10, or result of add with 5 and 10
+    FunctionCall {
+        name: String,
+        arguments: Vec<Expr>,
+    },
+
+    /// Object instantiation: Person created with "Alice" and 30
+    NewObject {
+        class_name: String,
+        arguments: Vec<Expr>,
+    },
+
+    /// Method call: Ask alice to greet
+    MethodCall {
+        object: Box<Expr>,
+        method: String,
+        arguments: Vec<Expr>,
+    },
+
+    /// Property access: the name of alice
+    PropertyAccess {
+        object: Box<Expr>,
+        property: String,
+    },
 }
 
 /// Statements in eng-lish
@@ -153,17 +229,31 @@ pub enum Statement {
 
     /// Expression statement (for side effects)
     ExprStatement(Expr),
+
+    /// Return statement: Give back x.
+    Return(Option<Expr>),
+
+    /// Property assignment: Set the name of alice to "Alice".
+    PropertyAssignment {
+        object: String,
+        property: String,
+        value: Expr,
+    },
 }
 
 /// A complete eng-lish program
 #[derive(Debug, Clone)]
 pub struct Program {
+    pub classes: Vec<ClassDef>,
+    pub functions: Vec<FunctionDef>,
     pub statements: Vec<Statement>,
 }
 
 impl Program {
     pub fn new() -> Self {
         Self {
+            classes: Vec::new(),
+            functions: Vec::new(),
             statements: Vec::new(),
         }
     }

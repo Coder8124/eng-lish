@@ -5,7 +5,8 @@ use inkwell::module::Module;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
 };
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::types::{BasicType, BasicTypeEnum};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
 use inkwell::OptimizationLevel;
 use std::collections::HashMap;
 use std::path::Path;
@@ -16,6 +17,21 @@ pub struct CodeGen<'ctx> {
     builder: Builder<'ctx>,
     variables: HashMap<String, (PointerValue<'ctx>, Type)>,
     printf_fn: Option<FunctionValue<'ctx>>,
+    malloc_fn: Option<FunctionValue<'ctx>>,
+    /// Compiled function values
+    functions: HashMap<String, FunctionValue<'ctx>>,
+    /// Class struct types: class_name -> (struct_type, field_names_in_order)
+    class_types: HashMap<String, (inkwell::types::StructType<'ctx>, Vec<String>)>,
+    /// Class field types: class_name -> { field_name -> Type }
+    class_field_types: HashMap<String, HashMap<String, Type>>,
+    /// Class method functions: class_name -> { method_name -> FunctionValue }
+    class_methods: HashMap<String, HashMap<String, FunctionValue<'ctx>>>,
+    /// Class constructor functions: class_name -> FunctionValue
+    class_constructors: HashMap<String, FunctionValue<'ctx>>,
+    /// Current self pointer (when compiling methods/constructors)
+    current_self: Option<PointerValue<'ctx>>,
+    /// Current class name (when compiling methods/constructors)
+    current_class_name: Option<String>,
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -29,11 +45,47 @@ impl<'ctx> CodeGen<'ctx> {
             builder,
             variables: HashMap::new(),
             printf_fn: None,
+            malloc_fn: None,
+            functions: HashMap::new(),
+            class_types: HashMap::new(),
+            class_field_types: HashMap::new(),
+            class_methods: HashMap::new(),
+            class_constructors: HashMap::new(),
+            current_self: None,
+            current_class_name: None,
         }
     }
 
     pub fn compile(&mut self, program: &Program) -> Result<(), String> {
         self.declare_printf();
+        self.declare_malloc();
+
+        // First pass: declare class struct types
+        for class in &program.classes {
+            self.declare_class_type(class)?;
+        }
+
+        // Second pass: declare all functions (forward declarations)
+        for func in &program.functions {
+            self.declare_function(func)?;
+        }
+
+        // Third pass: declare class methods and constructors
+        for class in &program.classes {
+            self.declare_class_methods(class)?;
+        }
+
+        // Fourth pass: compile function bodies
+        for func in &program.functions {
+            self.compile_function(func)?;
+        }
+
+        // Fifth pass: compile class method/constructor bodies
+        for class in &program.classes {
+            self.compile_class_bodies(class)?;
+        }
+
+        // Finally: create main function with top-level statements
         self.create_main_function(program)?;
         Ok(())
     }
@@ -43,6 +95,311 @@ impl<'ctx> CodeGen<'ctx> {
         let i8_ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
         let printf_type = i32_type.fn_type(&[i8_ptr_type.into()], true);
         self.printf_fn = Some(self.module.add_function("printf", printf_type, None));
+    }
+
+    fn declare_malloc(&mut self) {
+        let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+        let i64_type = self.context.i64_type();
+        let malloc_type = ptr_type.fn_type(&[i64_type.into()], false);
+        self.malloc_fn = Some(self.module.add_function("malloc", malloc_type, None));
+    }
+
+    // ========== Function Compilation ==========
+
+    fn declare_function(&mut self, func: &FunctionDef) -> Result<(), String> {
+        let return_type = &func.return_type;
+        let param_types: Vec<BasicTypeEnum<'ctx>> = func
+            .parameters
+            .iter()
+            .map(|p| self.get_llvm_type(&p.param_type))
+            .collect();
+
+        let param_meta: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+            param_types.iter().map(|t| (*t).into()).collect();
+
+        let fn_type = if *return_type == Type::Void {
+            self.context.void_type().fn_type(&param_meta, false)
+        } else {
+            let ret_llvm = self.get_llvm_type(return_type);
+            ret_llvm.fn_type(&param_meta, false)
+        };
+
+        let fn_value = self.module.add_function(&func.name, fn_type, None);
+        self.functions.insert(func.name.clone(), fn_value);
+        Ok(())
+    }
+
+    fn compile_function(&mut self, func: &FunctionDef) -> Result<(), String> {
+        let fn_value = *self
+            .functions
+            .get(&func.name)
+            .ok_or_else(|| format!("Function {} not declared", func.name))?;
+
+        let entry = self.context.append_basic_block(fn_value, "entry");
+        self.builder.position_at_end(entry);
+
+        // Save and clear current variables scope
+        let saved_vars = std::mem::take(&mut self.variables);
+
+        // Bind parameters to allocas
+        for (i, param) in func.parameters.iter().enumerate() {
+            let param_val = fn_value.get_nth_param(i as u32).unwrap();
+            let alloca = self
+                .builder
+                .build_alloca(self.get_llvm_type(&param.param_type), &param.name)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(alloca, param_val)
+                .map_err(|e| e.to_string())?;
+            self.variables
+                .insert(param.name.clone(), (alloca, param.param_type.clone()));
+        }
+
+        // Compile body
+        for stmt in &func.body {
+            self.compile_statement(stmt)?;
+        }
+
+        // If void function, add implicit return
+        if func.return_type == Type::Void {
+            // Check if the current block doesn't already have a terminator
+            if self
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_terminator()
+                .is_none()
+            {
+                self.builder
+                    .build_return(None)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+
+        // Restore variables
+        self.variables = saved_vars;
+        Ok(())
+    }
+
+    // ========== Class Compilation ==========
+
+    fn declare_class_type(&mut self, class: &ClassDef) -> Result<(), String> {
+        // Collect all fields (including inherited)
+        let mut field_names: Vec<String> = Vec::new();
+        let mut field_llvm_types: Vec<BasicTypeEnum<'ctx>> = Vec::new();
+        let mut field_type_map: HashMap<String, Type> = HashMap::new();
+
+        // If there's a parent, include its fields first
+        if let Some(parent_name) = &class.parent {
+            if let Some((_, parent_fields)) = self.class_types.get(parent_name) {
+                let parent_field_types = self.class_field_types.get(parent_name).unwrap();
+                for field_name in parent_fields {
+                    let ft = parent_field_types.get(field_name).unwrap().clone();
+                    field_names.push(field_name.clone());
+                    field_llvm_types.push(self.get_llvm_type(&ft));
+                    field_type_map.insert(field_name.clone(), ft);
+                }
+            }
+        }
+
+        // Add own properties
+        for prop in &class.properties {
+            if !field_names.contains(&prop.name) {
+                field_names.push(prop.name.clone());
+                field_llvm_types.push(self.get_llvm_type(&prop.prop_type));
+                field_type_map.insert(prop.name.clone(), prop.prop_type.clone());
+            }
+        }
+
+        let struct_type = self
+            .context
+            .opaque_struct_type(&format!("class.{}", class.name));
+        struct_type.set_body(&field_llvm_types, false);
+
+        self.class_types
+            .insert(class.name.clone(), (struct_type, field_names));
+        self.class_field_types
+            .insert(class.name.clone(), field_type_map);
+
+        Ok(())
+    }
+
+    fn declare_class_methods(&mut self, class: &ClassDef) -> Result<(), String> {
+        let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+        let mut methods_map: HashMap<String, FunctionValue<'ctx>> = HashMap::new();
+
+        // Inherit parent methods
+        if let Some(parent_name) = &class.parent {
+            if let Some(parent_methods) = self.class_methods.get(parent_name) {
+                methods_map.extend(parent_methods.clone());
+            }
+        }
+
+        // Declare constructor
+        if let Some(constructor) = &class.constructor {
+            let mut param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+                vec![ptr_type.into()]; // self pointer
+            for param in &constructor.parameters {
+                param_types.push(self.get_llvm_type(&param.param_type).into());
+            }
+            let ctor_type = self.context.void_type().fn_type(&param_types, false);
+            let ctor_name = format!("{}_create", class.name);
+            let ctor_fn = self.module.add_function(&ctor_name, ctor_type, None);
+            self.class_constructors
+                .insert(class.name.clone(), ctor_fn);
+        }
+
+        // Declare methods
+        for method in &class.methods {
+            let mut param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+                vec![ptr_type.into()]; // self pointer
+            for param in &method.parameters {
+                param_types.push(self.get_llvm_type(&param.param_type).into());
+            }
+
+            let fn_type = if method.return_type == Type::Void {
+                self.context.void_type().fn_type(&param_types, false)
+            } else {
+                self.get_llvm_type(&method.return_type)
+                    .fn_type(&param_types, false)
+            };
+
+            let method_name = format!("{}_{}", class.name, method.name);
+            let method_fn = self.module.add_function(&method_name, fn_type, None);
+            methods_map.insert(method.name.clone(), method_fn);
+        }
+
+        self.class_methods
+            .insert(class.name.clone(), methods_map);
+        Ok(())
+    }
+
+    fn compile_class_bodies(&mut self, class: &ClassDef) -> Result<(), String> {
+        let (struct_type, field_names) = self.class_types.get(&class.name).unwrap().clone();
+        let field_type_map = self.class_field_types.get(&class.name).unwrap().clone();
+
+        // Compile constructor
+        if let Some(constructor) = &class.constructor {
+            let ctor_fn = *self.class_constructors.get(&class.name).unwrap();
+            let entry = self.context.append_basic_block(ctor_fn, "entry");
+            self.builder.position_at_end(entry);
+
+            let saved_vars = std::mem::take(&mut self.variables);
+            let saved_self = self.current_self.take();
+            let saved_class = self.current_class_name.take();
+
+            let self_ptr = ctor_fn.get_nth_param(0).unwrap().into_pointer_value();
+            self.current_self = Some(self_ptr);
+            self.current_class_name = Some(class.name.clone());
+
+            // Bind properties as variables (pointing into struct fields)
+            for (idx, fname) in field_names.iter().enumerate() {
+                let ftype = field_type_map.get(fname).unwrap().clone();
+                let field_ptr = self
+                    .builder
+                    .build_struct_gep(struct_type, self_ptr, idx as u32, fname)
+                    .map_err(|e| format!("GEP error: {:?}", e))?;
+                self.variables
+                    .insert(fname.clone(), (field_ptr, ftype));
+            }
+
+            // Bind constructor parameters
+            for (i, param) in constructor.parameters.iter().enumerate() {
+                let param_val = ctor_fn.get_nth_param((i + 1) as u32).unwrap();
+                let alloca = self
+                    .builder
+                    .build_alloca(self.get_llvm_type(&param.param_type), &param.name)
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_store(alloca, param_val)
+                    .map_err(|e| e.to_string())?;
+                self.variables
+                    .insert(param.name.clone(), (alloca, param.param_type.clone()));
+            }
+
+            for stmt in &constructor.body {
+                self.compile_statement(stmt)?;
+            }
+
+            self.builder
+                .build_return(None)
+                .map_err(|e| e.to_string())?;
+
+            self.variables = saved_vars;
+            self.current_self = saved_self;
+            self.current_class_name = saved_class;
+        }
+
+        // Compile methods
+        for method in &class.methods {
+            let method_fn = *self
+                .class_methods
+                .get(&class.name)
+                .unwrap()
+                .get(&method.name)
+                .unwrap();
+
+            let entry = self.context.append_basic_block(method_fn, "entry");
+            self.builder.position_at_end(entry);
+
+            let saved_vars = std::mem::take(&mut self.variables);
+            let saved_self = self.current_self.take();
+            let saved_class = self.current_class_name.take();
+
+            let self_ptr = method_fn.get_nth_param(0).unwrap().into_pointer_value();
+            self.current_self = Some(self_ptr);
+            self.current_class_name = Some(class.name.clone());
+
+            // Bind properties as variables
+            for (idx, fname) in field_names.iter().enumerate() {
+                let ftype = field_type_map.get(fname).unwrap().clone();
+                let field_ptr = self
+                    .builder
+                    .build_struct_gep(struct_type, self_ptr, idx as u32, fname)
+                    .map_err(|e| format!("GEP error: {:?}", e))?;
+                self.variables
+                    .insert(fname.clone(), (field_ptr, ftype));
+            }
+
+            // Bind method parameters
+            for (i, param) in method.parameters.iter().enumerate() {
+                let param_val = method_fn.get_nth_param((i + 1) as u32).unwrap();
+                let alloca = self
+                    .builder
+                    .build_alloca(self.get_llvm_type(&param.param_type), &param.name)
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_store(alloca, param_val)
+                    .map_err(|e| e.to_string())?;
+                self.variables
+                    .insert(param.name.clone(), (alloca, param.param_type.clone()));
+            }
+
+            for stmt in &method.body {
+                self.compile_statement(stmt)?;
+            }
+
+            // Implicit return for void methods
+            if method.return_type == Type::Void {
+                if self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_terminator()
+                    .is_none()
+                {
+                    self.builder
+                        .build_return(None)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+
+            self.variables = saved_vars;
+            self.current_self = saved_self;
+            self.current_class_name = saved_class;
+        }
+
+        Ok(())
     }
 
     fn create_main_function(&mut self, program: &Program) -> Result<(), String> {
@@ -211,6 +568,68 @@ impl<'ctx> CodeGen<'ctx> {
             Statement::ExprStatement(expr) => {
                 self.compile_expression(expr)?;
             }
+
+            Statement::Return(expr) => {
+                if let Some(return_expr) = expr {
+                    let val = self.compile_expression(return_expr)?;
+                    self.builder
+                        .build_return(Some(&val))
+                        .map_err(|e| e.to_string())?;
+                } else {
+                    self.builder
+                        .build_return(None)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+
+            Statement::PropertyAssignment {
+                object,
+                property,
+                value,
+            } => {
+                let (obj_ptr, obj_type) = self
+                    .variables
+                    .get(object)
+                    .ok_or_else(|| format!("Undefined variable: {}", object))?
+                    .clone();
+
+                let class_name = match &obj_type {
+                    Type::Class(name) => name.clone(),
+                    _ => return Err(format!("{} is not a class instance", object)),
+                };
+
+                let (struct_type, field_names) = self
+                    .class_types
+                    .get(&class_name)
+                    .ok_or_else(|| format!("Unknown class: {}", class_name))?
+                    .clone();
+
+                let field_idx = field_names
+                    .iter()
+                    .position(|n| n == property)
+                    .ok_or_else(|| format!("No field {} on {}", property, class_name))?;
+
+                // obj_ptr is a pointer to a pointer (alloca of the heap pointer)
+                let heap_ptr = self
+                    .builder
+                    .build_load(
+                        self.context.ptr_type(inkwell::AddressSpace::default()),
+                        obj_ptr,
+                        "obj_load",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value();
+
+                let field_ptr = self
+                    .builder
+                    .build_struct_gep(struct_type, heap_ptr, field_idx as u32, property)
+                    .map_err(|e| format!("GEP error: {:?}", e))?;
+
+                let val = self.compile_expression(value)?;
+                self.builder
+                    .build_store(field_ptr, val)
+                    .map_err(|e| e.to_string())?;
+            }
         }
 
         Ok(())
@@ -298,6 +717,166 @@ impl<'ctx> CodeGen<'ctx> {
             Expr::ListLiteral(_) => Err("List literals not yet implemented".to_string()),
 
             Expr::Index { .. } => Err("Index access not yet implemented".to_string()),
+
+            Expr::FunctionCall { name, arguments } => {
+                let fn_value = *self
+                    .functions
+                    .get(name)
+                    .ok_or_else(|| format!("Undefined function: {}", name))?;
+
+                let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = Vec::new();
+                for arg in arguments {
+                    args.push(self.compile_expression(arg)?.into());
+                }
+
+                let call = self
+                    .builder
+                    .build_call(fn_value, &args, "call")
+                    .map_err(|e| e.to_string())?;
+
+                // If the function returns void, return a dummy value
+                match call.try_as_basic_value() {
+                    ValueKind::Basic(val) => Ok(val),
+                    ValueKind::Instruction(_) => {
+                        // Void return - return a dummy i64 0
+                        Ok(self.context.i64_type().const_int(0, false).into())
+                    }
+                }
+            }
+
+            Expr::NewObject {
+                class_name,
+                arguments,
+            } => {
+                let (struct_type, _) = self
+                    .class_types
+                    .get(class_name)
+                    .ok_or_else(|| format!("Unknown class: {}", class_name))?
+                    .clone();
+
+                // Allocate memory on the heap
+                let malloc = self.malloc_fn.ok_or("malloc not declared")?;
+                let struct_size = struct_type.size_of().unwrap();
+                let size_val: BasicValueEnum<'ctx> = struct_size.into();
+                let malloc_result = self
+                    .builder
+                    .build_call(malloc, &[size_val.into()], "obj_alloc")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value();
+                let heap_ptr = match malloc_result {
+                    ValueKind::Basic(val) => val.into_pointer_value(),
+                    ValueKind::Instruction(_) => return Err("malloc returned void".to_string()),
+                };
+
+                // Call constructor if it exists
+                if let Some(ctor_fn) = self.class_constructors.get(class_name).copied() {
+                    let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                        vec![heap_ptr.into()];
+                    for arg in arguments {
+                        args.push(self.compile_expression(arg)?.into());
+                    }
+                    self.builder
+                        .build_call(ctor_fn, &args, "ctor_call")
+                        .map_err(|e| e.to_string())?;
+                }
+
+                Ok(heap_ptr.into())
+            }
+
+            Expr::MethodCall {
+                object,
+                method,
+                arguments,
+            } => {
+                let obj_val = self.compile_expression(object)?;
+                let obj_ptr = match obj_val {
+                    BasicValueEnum::PointerValue(p) => p,
+                    _ => return Err("Expected object pointer for method call".to_string()),
+                };
+
+                // Determine the class name from the object expression
+                let class_name = self.infer_class_name(object)?;
+
+                let method_fn = *self
+                    .class_methods
+                    .get(&class_name)
+                    .and_then(|m| m.get(method))
+                    .ok_or_else(|| format!("No method {} on {}", method, class_name))?;
+
+                let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                    vec![obj_ptr.into()];
+                for arg in arguments {
+                    args.push(self.compile_expression(arg)?.into());
+                }
+
+                let call = self
+                    .builder
+                    .build_call(method_fn, &args, "method_call")
+                    .map_err(|e| e.to_string())?;
+
+                match call.try_as_basic_value() {
+                    ValueKind::Basic(val) => Ok(val),
+                    ValueKind::Instruction(_) => {
+                        Ok(self.context.i64_type().const_int(0, false).into())
+                    }
+                }
+            }
+
+            Expr::PropertyAccess { object, property } => {
+                let obj_val = self.compile_expression(object)?;
+                let obj_ptr = match obj_val {
+                    BasicValueEnum::PointerValue(p) => p,
+                    _ => return Err("Expected object pointer for property access".to_string()),
+                };
+
+                let class_name = self.infer_class_name(object)?;
+
+                let (struct_type, field_names) = self
+                    .class_types
+                    .get(&class_name)
+                    .ok_or_else(|| format!("Unknown class: {}", class_name))?
+                    .clone();
+
+                let field_idx = field_names
+                    .iter()
+                    .position(|n| n == property)
+                    .ok_or_else(|| format!("No field {} on {}", property, class_name))?;
+
+                let field_type = self
+                    .class_field_types
+                    .get(&class_name)
+                    .and_then(|m| m.get(property))
+                    .ok_or_else(|| format!("No field {} on {}", property, class_name))?
+                    .clone();
+
+                let field_ptr = self
+                    .builder
+                    .build_struct_gep(struct_type, obj_ptr, field_idx as u32, property)
+                    .map_err(|e| format!("GEP error: {:?}", e))?;
+
+                let llvm_type = self.get_llvm_type(&field_type);
+                Ok(self
+                    .builder
+                    .build_load(llvm_type, field_ptr, &format!("load_{}", property))
+                    .map_err(|e| e.to_string())?)
+            }
+        }
+    }
+
+    /// Infer the class name from an expression (for method calls and property access)
+    fn infer_class_name(&self, expr: &Expr) -> Result<String, String> {
+        match expr {
+            Expr::Identifier(name) => {
+                let (_, var_type) = self
+                    .variables
+                    .get(name)
+                    .ok_or_else(|| format!("Undefined variable: {}", name))?;
+                match var_type {
+                    Type::Class(class_name) => Ok(class_name.clone()),
+                    _ => Err(format!("{} is not a class instance", name)),
+                }
+            }
+            _ => Err("Cannot determine class type for expression".to_string()),
         }
     }
 
@@ -447,11 +1026,13 @@ impl<'ctx> CodeGen<'ctx> {
     fn emit_print(&self, value: BasicValueEnum<'ctx>, expr: &Expr) -> Result<(), String> {
         let printf = self.printf_fn.ok_or("printf not declared")?;
 
+        let inferred = self.infer_type(expr);
+
         let format_str = match value {
             BasicValueEnum::IntValue(_) => "%lld\n",
             BasicValueEnum::FloatValue(_) => "%f\n",
             BasicValueEnum::PointerValue(_) => {
-                if matches!(expr, Expr::StringLiteral(_)) {
+                if inferred == Type::Text {
                     "%s\n"
                 } else {
                     "%p\n"
@@ -482,6 +1063,8 @@ impl<'ctx> CodeGen<'ctx> {
             Type::Float => self.context.f64_type().into(),
             Type::Bool => self.context.bool_type().into(),
             Type::Text => self.context.ptr_type(inkwell::AddressSpace::default()).into(),
+            Type::Class(_) => self.context.ptr_type(inkwell::AddressSpace::default()).into(),
+            Type::Void => self.context.i64_type().into(), // shouldn't be used as value type
             _ => self.context.i64_type().into(),
         }
     }
@@ -506,6 +1089,34 @@ impl<'ctx> CodeGen<'ctx> {
                     Type::Int
                 }
             }
+            Expr::FunctionCall { name, .. } => self
+                .functions
+                .get(name)
+                .and_then(|f| {
+                    let ft = f.get_type();
+                    ft.get_return_type().map(|_| {
+                        // We don't have direct ast-level info here, so approximate
+                        Type::Int
+                    })
+                })
+                .unwrap_or(Type::Int),
+            Expr::NewObject { class_name, .. } => Type::Class(class_name.clone()),
+            Expr::MethodCall { object, .. } => {
+                // Approximate: infer object's class then look up method return type
+                self.infer_type(object)
+            }
+            Expr::PropertyAccess { object, property } => {
+                if let Type::Class(class_name) = self.infer_type(object) {
+                    self.class_field_types
+                        .get(&class_name)
+                        .and_then(|m| m.get(property))
+                        .cloned()
+                        .unwrap_or(Type::Int)
+                } else {
+                    Type::Int
+                }
+            }
+            Expr::TypeConversion { target_type, .. } => target_type.clone(),
             _ => Type::Int,
         }
     }
