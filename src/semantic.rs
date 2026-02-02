@@ -1,5 +1,6 @@
 use crate::ast::*;
-use std::collections::HashMap;
+use crate::stdlib;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 #[derive(Error, Debug, Clone)]
@@ -86,19 +87,44 @@ pub struct SemanticAnalyzer {
     current_class: Option<String>,
     /// Current function return type (for return statement checking)
     current_function_return_type: Option<Type>,
+    /// Builtin function names that allow Int → Float auto-promotion
+    builtin_int_promotable: HashSet<String>,
     /// Collected errors
     pub errors: Vec<SemanticError>,
 }
 
 impl SemanticAnalyzer {
     pub fn new() -> Self {
-        Self {
+        let mut analyzer = Self {
             scopes: vec![HashMap::new()],
             functions: HashMap::new(),
             classes: HashMap::new(),
             current_class: None,
             current_function_return_type: None,
+            builtin_int_promotable: HashSet::new(),
             errors: Vec::new(),
+        };
+        analyzer.register_builtin_functions();
+        analyzer
+    }
+
+    fn register_builtin_functions(&mut self) {
+        for builtin in stdlib::get_all_builtins() {
+            let sig = FunctionSignature {
+                name: builtin.names[0].to_string(),
+                parameters: builtin
+                    .parameters
+                    .iter()
+                    .map(|(name, typ)| (name.to_string(), typ.clone()))
+                    .collect(),
+                return_type: builtin.return_type.clone(),
+            };
+            for name in &builtin.names {
+                self.functions.insert(name.to_string(), sig.clone());
+                if builtin.accepts_int_as_float {
+                    self.builtin_int_promotable.insert(name.to_string());
+                }
+            }
         }
     }
 
@@ -602,6 +628,13 @@ impl SemanticAnalyzer {
                 for (arg, (_param_name, param_type)) in arguments.iter().zip(sig.parameters.iter())
                 {
                     let arg_type = self.analyze_expression(arg)?;
+                    // Allow Int → Float auto-promotion for builtin math functions
+                    if param_type == &Type::Float
+                        && arg_type == Type::Int
+                        && self.builtin_int_promotable.contains(name)
+                    {
+                        continue;
+                    }
                     self.check_type_compatible(param_type, &arg_type)?;
                 }
 

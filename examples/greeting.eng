@@ -1,0 +1,4 @@
+let name be a text with value "Pragun".
+output "Welcome to eng-lish!".
+output name.
+

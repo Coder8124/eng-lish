@@ -1,0 +1,10 @@
+let greeting be a text with value the result of combine with "Hello" and " World".
+output greeting.
+let length be a standard number with value the result of lengthOf with "Hello".
+output length.
+let ch be a text with value the result of characterAt with "Hello" and 1.
+output ch.
+let upper be a text with value the result of uppercase with "hello".
+output upper.
+let lower be a text with value the result of lowercase with "HELLO".
+output lower.

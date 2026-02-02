@@ -1,0 +1,10 @@
+let x be a decimal with value the result of squareRoot with 16.
+output x.
+let y be a decimal with value the result of power with 2 and 10.
+output y.
+let z be a decimal with value the result of sine with 3.14159.
+output z.
+let w be a decimal with value the result of absoluteValue with 42.
+output w.
+let r be a decimal with value the result of round with 3.7.
+output r.
