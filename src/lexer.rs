@@ -128,6 +128,74 @@ pub enum Token {
     #[token("output", ignore(case))]
     Output,
 
+    // Function keywords
+    #[token("returning", ignore(case))]
+    Returning,
+
+    #[token("nothing", ignore(case))]
+    Nothing,
+
+    #[token("give", ignore(case))]
+    Give,
+
+    #[token("back", ignore(case))]
+    Back,
+
+    #[token("end kind", ignore(case))]
+    EndKind,
+
+    #[token("end create", ignore(case))]
+    EndCreate,
+
+    #[token("end", ignore(case))]
+    End,
+
+    #[token("call", ignore(case))]
+    Call,
+
+    #[token("result", ignore(case))]
+    Result,
+
+    #[token("and", ignore(case))]
+    And,
+
+    // Class keywords
+    #[token("define", ignore(case))]
+    Define,
+
+    #[token("kind", ignore(case))]
+    Kind,
+
+    #[token("property", ignore(case))]
+    Property,
+
+    #[token("the following", ignore(case))]
+    TheFollowing,
+
+    #[token("the")]
+    The,
+
+    #[token("following", ignore(case))]
+    Following,
+
+    #[token("created", ignore(case))]
+    Created,
+
+    #[token("create", ignore(case))]
+    Create,
+
+    #[token("ask", ignore(case))]
+    Ask,
+
+    #[token("asking", ignore(case))]
+    Asking,
+
+    #[token("extends", ignore(case))]
+    Extends,
+
+    #[token("set", ignore(case))]
+    Set,
+
     // Type conversion (signifier)
     #[token("of", ignore(case))]
     Of,
@@ -206,6 +274,15 @@ impl<'source> Lexer<'source> {
                         span: lexer.span(),
                         message: format!("Unexpected token: '{}'", lexer.slice()),
                     });
+                }
+            }
+        }
+
+        // Post-process: fix logos priority issue where "the" gets lexed as Identifier
+        for token in &mut tokens {
+            if let Token::Identifier(ref s) = token.token {
+                if s.eq_ignore_ascii_case("the") {
+                    token.token = Token::The;
                 }
             }
         }

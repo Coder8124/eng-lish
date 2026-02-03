@@ -3,6 +3,7 @@ mod codegen;
 mod lexer;
 mod parser;
 mod semantic;
+mod stdlib;
 
 use codegen::CodeGen;
 use inkwell::context::Context;
@@ -83,7 +84,7 @@ fn main() {
 
     // Link with clang
     let status = Command::new("clang")
-        .args([&obj_path, "-o", &exe_path])
+        .args([&obj_path, "-o", &exe_path, "-lm"])
         .status();
 
     match status {

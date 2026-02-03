@@ -1,0 +1,44 @@
+#!/bin/bash
+set -e
+
+if [ $# -lt 1 ]; then
+    echo "Usage: speed <file.eng> [--ir]"
+    echo "Compiles and runs an eng-lish program."
+    exit 1
+fi
+
+SOURCE="$1"
+shift
+
+# Check file exists
+if [ ! -f "$SOURCE" ]; then
+    # Try in examples/ directory
+    if [ -f "examples/$SOURCE" ]; then
+        SOURCE="examples/$SOURCE"
+    else
+        echo "Error: file '$SOURCE' not found"
+        exit 1
+    fi
+fi
+
+# If --ir flag, just print IR and exit
+if [[ "$*" == *"--ir"* ]]; then
+    englishc "$SOURCE" --ir
+    exit 0
+fi
+
+# Get the output binary name (strip path and extension)
+BASENAME=$(basename "$SOURCE" .eng)
+TMPBIN="/tmp/eng-lish-$BASENAME"
+
+# Compile
+englishc "$SOURCE"
+
+# Move binary to temp location (englishc outputs to current dir with source stem name)
+mv "$BASENAME" "$TMPBIN" 2>/dev/null || true
+
+# Run
+"$TMPBIN" "$@"
+
+# Clean up
+rm -f "$TMPBIN"

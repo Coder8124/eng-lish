@@ -1,0 +1,21 @@
+Define a kind called Counter with the following:
+    Property count is a standard number.
+
+    To create with a standard number initial:
+        Set count to initial.
+    End create.
+
+    To increment returning nothing:
+        Add 1 to count.
+    End.
+
+    To getValue returning a standard number:
+        Give back count.
+    End.
+End kind.
+
+Let c be a Counter created with 0.
+Ask c to increment.
+Ask c to increment.
+Ask c to increment.
+output the result of asking c to getValue.
