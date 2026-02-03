@@ -1,0 +1,4 @@
+let x be a standard number with value 10.
+let y be a standard number with value 5.
+Add y to x.
+output x.

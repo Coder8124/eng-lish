@@ -1,0 +1,62 @@
+Translations: (Python to Eng-Lish)
+
+will be statically typed, especially for variables!!!
+
+print() = output:
+return = function output
+types:
+str = text
+int = standard number
+float = decimal
+list = list
+dictionary = lock and key list
+tuple = fixed list
+set = unique collection
+boolean = true or false
+
+signifier?: of statement, which acts like a bridge
+e.g converting string(text) to int(standard number) =  standard number of text
+in python this would be (int(insidestring))
+
+
+variable declaration:
+
+"let" keyword: initalizes the variable definition
+"with value" keyword: same function as the = sign in python, tells the computer what value this has
+sample var dec(eng-lish): let varname be a decimal with value 3.74
+sample var dec(python): varname = 3.74
+
+
+Operations:
+
++ -> add (always outputs a decimal)
+- -> subtract (always outputs a decimal)
+/ -> divide (always outputs a decimal)
+% -> remainder (always outputs a standard number)
+// -> quotient (always outputs a standard number)
+"to" and "value" -> assignment operator
+== -> same
+!= -> not equal
+
+example sentence(operations):
+python: varname += 6
+eng-lish: Add 6 to varname.
+
+conditional statements:
+If <condition> then <action>
+
+python          to            eng-lish:
+if a!= 5:                    If a is not equal to 5 then
+...                          ...
+
+
+
+sentence ender: .
+
+goal: no sentences longer than 15-20 words, then it becomes hard to read & understand
+
+
+
+
+example sentence:
+print("Hello World") = output
