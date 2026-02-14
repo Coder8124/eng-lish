@@ -1,28 +1,102 @@
 use crate::ast::*;
 use crate::lexer::{Lexer, SpannedToken, Token};
-use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum ParseError {
-    #[error("Unexpected end of input")]
     UnexpectedEof,
-
-    #[error("Unexpected token at position {position}: expected {expected}, found {found:?}")]
     UnexpectedToken {
         expected: String,
         found: Token,
-        position: usize,
+        line: usize,
     },
-
-    #[error("Invalid statement at position {0}: {1}")]
     InvalidStatement(usize, String),
-
-    #[error("Expected type at position {0}")]
     ExpectedType(usize),
-
-    #[error("Lexer error: {0}")]
-    LexerError(String),
+    LexerError(usize, String),
 }
+
+/// Convert a Token to a user-friendly description
+fn friendly_token_name(token: &Token) -> String {
+    match token {
+        Token::Let => "'let'".to_string(),
+        Token::Be => "'be'".to_string(),
+        Token::A => "'a'".to_string(),
+        Token::An => "'an'".to_string(),
+        Token::With => "'with'".to_string(),
+        Token::Value => "'value'".to_string(),
+        Token::Period => "a period (.)".to_string(),
+        Token::Comma => "a comma (,)".to_string(),
+        Token::Colon => "a colon (:)".to_string(),
+        Token::If => "'if'".to_string(),
+        Token::Then => "'then'".to_string(),
+        Token::Else | Token::Otherwise => "'otherwise'".to_string(),
+        Token::While => "'while'".to_string(),
+        Token::End => "'End'".to_string(),
+        Token::Output => "'output'".to_string(),
+        Token::Set => "'set'".to_string(),
+        Token::To => "'to'".to_string(),
+        Token::The => "'the'".to_string(),
+        Token::Result => "'result'".to_string(),
+        Token::Of => "'of'".to_string(),
+        Token::And => "'and'".to_string(),
+        Token::Or => "'or'".to_string(),
+        Token::Negative => "'negative'".to_string(),
+        Token::Not => "'not'".to_string(),
+        Token::For => "'for'".to_string(),
+        Token::Each => "'each'".to_string(),
+        Token::Stop => "'stop'".to_string(),
+        Token::Skip => "'skip'".to_string(),
+        Token::From => "'from'".to_string(),
+        Token::Call => "'call'".to_string(),
+        Token::Give => "'give'".to_string(),
+        Token::Back => "'back'".to_string(),
+        Token::Returning => "'returning'".to_string(),
+        Token::Define => "'define'".to_string(),
+        Token::Kind => "'kind'".to_string(),
+        Token::Property => "'property'".to_string(),
+        Token::Ask => "'ask'".to_string(),
+        Token::IntLiteral(Some(n)) => format!("the number {}", n),
+        Token::IntLiteral(None) => "a number".to_string(),
+        Token::FloatLiteral(Some(f)) => format!("the decimal {}", f),
+        Token::FloatLiteral(None) => "a decimal".to_string(),
+        Token::StringLiteral(s) => format!("the text \"{}\"", s),
+        Token::Identifier(name) => format!("'{}'", name),
+        Token::True | Token::False => "a yes/no value".to_string(),
+        _ => format!("{:?}", token),
+    }
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseError::UnexpectedEof => {
+                write!(f, "Your program ended too early. You might be missing an 'End.' to close a block.")
+            }
+            ParseError::UnexpectedToken { expected, found, line } => {
+                let found_name = friendly_token_name(found);
+                // Make the expected description friendlier
+                let expected_friendly = match expected.as_str() {
+                    "Period" => "a period (.) at the end of the sentence",
+                    "identifier" => "a name",
+                    "expression" => "a value or expression",
+                    "called" => "'called'",
+                    _ => expected,
+                };
+                write!(f, "Line {}: Expected {}, but found {}.", line, expected_friendly, found_name)
+            }
+            ParseError::InvalidStatement(line, msg) => {
+                write!(f, "Line {}: I don't understand this sentence. {}", line, msg)
+            }
+            ParseError::ExpectedType(line) => {
+                write!(f, "Line {}: I need to know what type this is (like 'standard number', 'decimal', or 'text').", line)
+            }
+            ParseError::LexerError(line, msg) => {
+                write!(f, "Line {}: {}", line, msg)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
 
 pub struct Parser {
     tokens: Vec<SpannedToken>,
@@ -35,7 +109,8 @@ impl Parser {
     }
 
     pub fn parse(source: &str) -> Result<Program, ParseError> {
-        let tokens = Lexer::tokenize(source).map_err(|e| ParseError::LexerError(e.message))?;
+        let tokens =
+            Lexer::tokenize(source).map_err(|e| ParseError::LexerError(e.line, e.message))?;
         let mut parser = Parser::new(tokens);
         parser.parse_program()
     }
@@ -44,6 +119,7 @@ impl Parser {
         let mut classes = Vec::new();
         let mut functions = Vec::new();
         let mut statements = Vec::new();
+        let mut statement_lines = Vec::new();
 
         while !self.is_at_end() {
             match self.current() {
@@ -56,7 +132,9 @@ impl Parser {
                     functions.push(self.parse_function_def()?);
                 }
                 _ => {
+                    let line = self.current_line();
                     statements.push(self.parse_statement()?);
+                    statement_lines.push(line);
                 }
             }
         }
@@ -65,6 +143,7 @@ impl Parser {
             classes,
             functions,
             statements,
+            statement_lines,
         })
     }
 
@@ -100,6 +179,13 @@ impl Parser {
             .unwrap_or(0)
     }
 
+    fn current_line(&self) -> usize {
+        self.tokens
+            .get(self.current)
+            .map(|t| t.line)
+            .unwrap_or(1)
+    }
+
     fn advance(&mut self) -> Option<&Token> {
         if !self.is_at_end() {
             self.current += 1;
@@ -132,7 +218,7 @@ impl Parser {
             Err(ParseError::UnexpectedToken {
                 expected: format!("{:?}", token),
                 found: self.current().cloned().unwrap_or(Token::Period),
-                position: self.current_position(),
+                line: self.current_line(),
             })
         }
     }
@@ -145,6 +231,9 @@ impl Parser {
             Some(Token::Output) => self.parse_output(),
             Some(Token::If) => self.parse_if(),
             Some(Token::While) => self.parse_while(),
+            Some(Token::For) => self.parse_for(),
+            Some(Token::Stop) => self.parse_break(),
+            Some(Token::Skip) => self.parse_continue(),
             Some(Token::Add) => self.parse_compound_assignment(BinaryOp::Add),
             Some(Token::Subtract) => self.parse_compound_assignment(BinaryOp::Subtract),
             Some(Token::Multiply) => self.parse_compound_assignment(BinaryOp::Multiply),
@@ -153,9 +242,10 @@ impl Parser {
             Some(Token::Call) => self.parse_call_statement(),
             Some(Token::Ask) => self.parse_ask_statement(),
             Some(Token::Set) => self.parse_set_statement(),
+            Some(Token::Plot) => self.parse_plot(),
             Some(Token::Identifier(_)) => self.parse_assignment_or_expr(),
             _ => Err(ParseError::InvalidStatement(
-                self.current_position(),
+                self.current_line(),
                 format!("Unexpected token: {:?}", self.current()),
             )),
         }
@@ -222,7 +312,7 @@ impl Parser {
         Ok(Statement::Output(expr))
     }
 
-    /// Parse: If condition then ... otherwise ...
+    /// Parse: If condition then ... otherwise if ... otherwise ...
     fn parse_if(&mut self) -> Result<Statement, ParseError> {
         self.expect(Token::If)?;
 
@@ -236,17 +326,33 @@ impl Parser {
 
         let then_block = self.parse_block()?;
 
-        let else_block = if self.match_token(&Token::Otherwise) || self.match_token(&Token::Else) {
+        // Parse else-if chains
+        let mut else_ifs = Vec::new();
+        let mut else_block = None;
+
+        while self.match_token(&Token::Otherwise) || self.match_token(&Token::Else) {
             // Optional comma
             self.match_token(&Token::Comma);
-            Some(self.parse_block()?)
-        } else {
-            None
-        };
+
+            // Check if this is an else-if
+            if self.check(&Token::If) {
+                self.advance(); // consume "if"
+                let elif_condition = self.parse_expression()?;
+                self.match_token(&Token::Then);
+                self.match_token(&Token::Comma);
+                let elif_block = self.parse_block()?;
+                else_ifs.push((elif_condition, elif_block));
+            } else {
+                // This is the final else block
+                else_block = Some(self.parse_block()?);
+                break;
+            }
+        }
 
         Ok(Statement::If {
             condition,
             then_block,
+            else_ifs,
             else_block,
         })
     }
@@ -263,6 +369,50 @@ impl Parser {
         let body = self.parse_block()?;
 
         Ok(Statement::While { condition, body })
+    }
+
+    /// Parse: For each x from start to end, ... End.
+    fn parse_for(&mut self) -> Result<Statement, ParseError> {
+        self.expect(Token::For)?;
+        self.expect(Token::Each)?;
+
+        let variable = self.expect_identifier()?;
+
+        self.expect(Token::From)?;
+        let start = self.parse_expression()?;
+
+        self.expect(Token::To)?;
+        let end = self.parse_expression()?;
+
+        // Optional comma
+        self.match_token(&Token::Comma);
+
+        // Parse body until "End."
+        let body = self.parse_body_until_end()?;
+
+        self.expect(Token::End)?;
+        self.expect(Token::Period)?;
+
+        Ok(Statement::For {
+            variable,
+            start,
+            end,
+            body,
+        })
+    }
+
+    /// Parse: stop.
+    fn parse_break(&mut self) -> Result<Statement, ParseError> {
+        self.expect(Token::Stop)?;
+        self.expect(Token::Period)?;
+        Ok(Statement::Break)
+    }
+
+    /// Parse: skip.
+    fn parse_continue(&mut self) -> Result<Statement, ParseError> {
+        self.expect(Token::Skip)?;
+        self.expect(Token::Period)?;
+        Ok(Statement::Continue)
     }
 
     /// Parse compound assignment: Add 5 to x.
@@ -452,14 +602,100 @@ impl Parser {
         Ok(Statement::Assignment { name, value })
     }
 
+    /// Parse: plot data [against yData] [as a <type> chart] [titled "Title"] to "file.html".
+    fn parse_plot(&mut self) -> Result<Statement, ParseError> {
+        self.expect(Token::Plot)?;
+
+        // Parse the data expression
+        let data = self.parse_expression()?;
+
+        // Optional "against yData" for scatter plots
+        let against = if self.match_token(&Token::Against) {
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        // Optional "as a <type> chart"
+        let chart_type = if self.match_token(&Token::As) {
+            // Optional article
+            if self.check(&Token::A) || self.check(&Token::An) {
+                self.advance();
+            }
+
+            let ct = if self.match_token(&Token::Line) {
+                ChartType::Line
+            } else if self.match_token(&Token::Bar) {
+                ChartType::Bar
+            } else if self.match_token(&Token::Scatter) {
+                ChartType::Scatter
+            } else if self.match_token(&Token::Histogram) {
+                ChartType::Histogram
+            } else {
+                ChartType::Line // default
+            };
+
+            // Optional "chart" keyword
+            self.match_token(&Token::Chart);
+
+            // Optional "plot" keyword (for "scatter plot")
+            self.match_token(&Token::Plot);
+
+            ct
+        } else {
+            ChartType::Line // default chart type
+        };
+
+        // Optional "titled 'Title'"
+        let title = if self.match_token(&Token::Titled) {
+            match self.current().cloned() {
+                Some(Token::StringLiteral(s)) => {
+                    self.advance();
+                    Some(s)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        // Required "to 'filename.html'"
+        self.expect(Token::To)?;
+        let output_file = match self.current().cloned() {
+            Some(Token::StringLiteral(s)) => {
+                self.advance();
+                s
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "output filename".to_string(),
+                    found: self.current().cloned().unwrap_or(Token::Period),
+                    line: self.current_line(),
+                });
+            }
+        };
+
+        self.expect(Token::Period)?;
+
+        Ok(Statement::Plot {
+            data,
+            against,
+            chart_type,
+            title,
+            output_file,
+        })
+    }
+
     /// Parse argument list: "expr and expr and expr"
     fn parse_argument_list(&mut self) -> Result<Vec<Expr>, ParseError> {
         let mut args = Vec::new();
 
-        args.push(self.parse_expression()?);
+        // Parse arguments at comparison level (not full expression)
+        // so that "and" is treated as separator, not boolean operator
+        args.push(self.parse_comparison()?);
 
         while self.match_token(&Token::And) {
-            args.push(self.parse_expression()?);
+            args.push(self.parse_comparison()?);
         }
 
         Ok(args)
@@ -508,7 +744,7 @@ impl Parser {
             other => Err(ParseError::UnexpectedToken {
                 expected: "identifier".to_string(),
                 found: other.unwrap_or(Token::Period),
-                position: self.current_position(),
+                line: self.current_line(),
             }),
         }
     }
@@ -540,7 +776,7 @@ impl Parser {
                 return Err(ParseError::UnexpectedToken {
                     expected: "called".to_string(),
                     found: self.current().cloned().unwrap_or(Token::Period),
-                    position: self.current_position(),
+                    line: self.current_line(),
                 });
             }
         }
@@ -583,7 +819,7 @@ impl Parser {
                 }
                 _ => {
                     return Err(ParseError::InvalidStatement(
-                        self.current_position(),
+                        self.current_line(),
                         format!(
                             "Expected Property, To, or End kind in class body, found {:?}",
                             self.current()
@@ -772,14 +1008,53 @@ impl Parser {
                 self.advance();
                 Ok(Type::Class(class_name))
             }
-            _ => Err(ParseError::ExpectedType(self.current_position())),
+            _ => Err(ParseError::ExpectedType(self.current_line())),
         }
     }
 
     // ========== Expression Parsing ==========
+    // Precedence (lowest to highest):
+    // 1. Or
+    // 2. And
+    // 3. Comparison (is greater than, is less than, is equal to, etc.)
+    // 4. Term (remainder, quotient)
+    // 5. Unary (not, negative)
+    // 6. Primary (literals, identifiers, function calls, etc.)
 
     fn parse_expression(&mut self) -> Result<Expr, ParseError> {
-        self.parse_comparison()
+        self.parse_or()
+    }
+
+    /// Parse: x or y
+    fn parse_or(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_and()?;
+
+        while self.match_token(&Token::Or) {
+            let right = self.parse_and()?;
+            left = Expr::BinaryOp {
+                op: BinaryOp::Or,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(left)
+    }
+
+    /// Parse: x and y
+    fn parse_and(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_comparison()?;
+
+        while self.match_token(&Token::And) {
+            let right = self.parse_comparison()?;
+            left = Expr::BinaryOp {
+                op: BinaryOp::And,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(left)
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
@@ -828,8 +1103,72 @@ impl Parser {
         Ok(left)
     }
 
+    /// Parse: remainder x by y, quotient x by y
     fn parse_term(&mut self) -> Result<Expr, ParseError> {
-        self.parse_primary()
+        // Check for "remainder x by y" or "quotient x by y"
+        if self.check(&Token::Remainder) {
+            self.advance();
+            let left = self.parse_unary()?;
+            self.expect(Token::By)?;
+            let right = self.parse_unary()?;
+            return Ok(Expr::BinaryOp {
+                op: BinaryOp::Remainder,
+                left: Box::new(left),
+                right: Box::new(right),
+            });
+        }
+
+        if self.check(&Token::Quotient) {
+            self.advance();
+            let left = self.parse_unary()?;
+            self.expect(Token::By)?;
+            let right = self.parse_unary()?;
+            return Ok(Expr::BinaryOp {
+                op: BinaryOp::Quotient,
+                left: Box::new(left),
+                right: Box::new(right),
+            });
+        }
+
+        self.parse_unary()
+    }
+
+    /// Parse: not x, negative x
+    fn parse_unary(&mut self) -> Result<Expr, ParseError> {
+        if self.match_token(&Token::Not) {
+            let operand = self.parse_unary()?;
+            return Ok(Expr::UnaryOp {
+                op: UnaryOp::Not,
+                operand: Box::new(operand),
+            });
+        }
+
+        if self.match_token(&Token::Negative) {
+            let operand = self.parse_unary()?;
+            return Ok(Expr::UnaryOp {
+                op: UnaryOp::Negate,
+                operand: Box::new(operand),
+            });
+        }
+
+        self.parse_postfix()
+    }
+
+    /// Parse postfix expressions: arr[0], arr[1][2], etc.
+    fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_primary()?;
+
+        // Handle index access: expr[index]
+        while self.match_token(&Token::LBracket) {
+            let index = self.parse_expression()?;
+            self.expect(Token::RBracket)?;
+            expr = Expr::Index {
+                collection: Box::new(expr),
+                index: Box::new(index),
+            };
+        }
+
+        Ok(expr)
     }
 
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
@@ -891,6 +1230,21 @@ impl Parser {
                 self.expect(Token::RParen)?;
                 Ok(expr)
             }
+            // List literal: [1, 2, 3]
+            Some(Token::LBracket) => {
+                self.advance(); // consume '['
+                let mut elements = Vec::new();
+
+                if !self.check(&Token::RBracket) {
+                    elements.push(self.parse_expression()?);
+                    while self.match_token(&Token::Comma) {
+                        elements.push(self.parse_expression()?);
+                    }
+                }
+
+                self.expect(Token::RBracket)?;
+                Ok(Expr::ListLiteral(elements))
+            }
             // "the result of funcName with args" or "the result of asking obj to method"
             // "the prop of obj"
             Some(Token::The) => {
@@ -910,7 +1264,7 @@ impl Parser {
             _ => Err(ParseError::UnexpectedToken {
                 expected: "expression".to_string(),
                 found: self.current().cloned().unwrap_or(Token::Period),
-                position: self.current_position(),
+                line: self.current_line(),
             }),
         }
     }
@@ -1000,6 +1354,76 @@ mod tests {
                 assert_eq!(s, "Hello World");
             }
             _ => panic!("Expected Output with StringLiteral"),
+        }
+    }
+
+    #[test]
+    fn test_parse_operators() {
+        // Test remainder
+        let program = Parser::parse("output remainder 10 by 3.").unwrap();
+        match &program.statements[0] {
+            Statement::Output(Expr::BinaryOp { op, .. }) => {
+                assert_eq!(*op, BinaryOp::Remainder);
+            }
+            _ => panic!("Expected Output with BinaryOp Remainder"),
+        }
+
+        // Test quotient
+        let program = Parser::parse("output quotient 10 by 3.").unwrap();
+        match &program.statements[0] {
+            Statement::Output(Expr::BinaryOp { op, .. }) => {
+                assert_eq!(*op, BinaryOp::Quotient);
+            }
+            _ => panic!("Expected Output with BinaryOp Quotient"),
+        }
+
+        // Test not
+        let program = Parser::parse("output not true.").unwrap();
+        match &program.statements[0] {
+            Statement::Output(Expr::UnaryOp { op, .. }) => {
+                assert_eq!(*op, UnaryOp::Not);
+            }
+            _ => panic!("Expected Output with UnaryOp Not"),
+        }
+
+        // Test negative
+        let program = Parser::parse("output negative 42.").unwrap();
+        match &program.statements[0] {
+            Statement::Output(Expr::UnaryOp { op, .. }) => {
+                assert_eq!(*op, UnaryOp::Negate);
+            }
+            _ => panic!("Expected Output with UnaryOp Negate"),
+        }
+
+        // Test and
+        let program = Parser::parse("output true and false.").unwrap();
+        match &program.statements[0] {
+            Statement::Output(Expr::BinaryOp { op, .. }) => {
+                assert_eq!(*op, BinaryOp::And);
+            }
+            _ => panic!("Expected Output with BinaryOp And"),
+        }
+
+        // Test or
+        let program = Parser::parse("output true or false.").unwrap();
+        match &program.statements[0] {
+            Statement::Output(Expr::BinaryOp { op, .. }) => {
+                assert_eq!(*op, BinaryOp::Or);
+            }
+            _ => panic!("Expected Output with BinaryOp Or"),
+        }
+    }
+
+    #[test]
+    fn test_list_literal() {
+        let result = Parser::parse("output [1, 2, 3].");
+        println!("Parse result: {:?}", result);
+        let program = result.unwrap();
+        match &program.statements[0] {
+            Statement::Output(Expr::ListLiteral(elements)) => {
+                assert_eq!(elements.len(), 3);
+            }
+            other => panic!("Expected Output with ListLiteral, got {:?}", other),
         }
     }
 }

@@ -1,0 +1,78 @@
+output "=== Array Literal and Indexing ===".
+
+let arr be a list of standard number with value [10, 20, 30, 40, 50].
+output "Array: [10, 20, 30, 40, 50]".
+
+output "First element (arr[0]):".
+output arr[0].
+
+output "Third element (arr[2]):".
+output arr[2].
+
+output "Last element (arr[4]):".
+output arr[4].
+
+output "".
+output "=== Array Length ===".
+let size be a standard number with value the result of arrayLength with arr.
+output "Length of arr:".
+output size.
+
+output "".
+output "=== Array Creation Functions ===".
+
+output "zeros(5) creates array of 5 zeros".
+let z be a list of decimal with value the result of zeros with 5.
+
+output "ones(3) creates array of 3 ones".
+let o be a list of decimal with value the result of ones with 3.
+
+output "range(1, 6) creates [1, 2, 3, 4, 5]".
+let r be a list of standard number with value the result of range with 1 and 6.
+output "First element of range:".
+output r[0].
+output "Last element of range:".
+output r[4].
+
+output "".
+output "=== Aggregation Functions ===".
+
+let nums be a list of decimal with value [1.0, 2.0, 3.0, 4.0, 5.0].
+output "Array: [1.0, 2.0, 3.0, 4.0, 5.0]".
+
+output "Sum:".
+let total be a decimal with value the result of sum with nums.
+output total.
+
+output "Mean:".
+let avg be a decimal with value the result of mean with nums.
+output avg.
+
+output "Min:".
+let minVal be a decimal with value the result of arrayMin with nums.
+output minVal.
+
+output "Max:".
+let maxVal be a decimal with value the result of arrayMax with nums.
+output maxVal.
+
+output "".
+output "=== Array Manipulation ===".
+
+let original be a list of standard number with value [1, 2, 3].
+output "Original: [1, 2, 3]".
+
+let appended be a list of standard number with value the result of append with original and 4.
+output "After append(4), first element:".
+output appended[0].
+output "After append(4), last element (new):".
+output appended[3].
+
+let reversed be a list of standard number with value the result of reverse with original.
+output "After reverse, first element (was last):".
+output reversed[0].
+output "After reverse, last element (was first):".
+output reversed[2].
+
+output "".
+output "All array tests completed!".

@@ -5,48 +5,59 @@ use thiserror::Error;
 
 #[derive(Error, Debug, Clone)]
 pub enum SemanticError {
-    #[error("Undefined variable: {0}")]
-    UndefinedVariable(String),
+    #[error("Line {1}: I don't know what '{0}' is. Did you forget to create it with 'let {0} be...'?")]
+    UndefinedVariable(String, usize),
 
-    #[error("Type mismatch: expected {expected}, found {found}")]
-    TypeMismatch { expected: Type, found: Type },
+    #[error("Line {line}: This expects a {expected}, but you gave it a {found}.")]
+    TypeMismatch {
+        expected: Type,
+        found: Type,
+        line: usize,
+    },
 
-    #[error("Cannot apply operator {op:?} to types {left} and {right}")]
+    #[error("Line {line}: You can't use {op:?} with {left} and {right}.")]
     InvalidOperator {
         op: BinaryOp,
         left: Type,
         right: Type,
+        line: usize,
     },
 
-    #[error("Variable already declared: {0}")]
-    AlreadyDeclared(String),
+    #[error("Line {1}: You already created '{0}'. Use 'set {0} to...' to change its value, or pick a different name.")]
+    AlreadyDeclared(String, usize),
 
-    #[error("Cannot convert {from} to {to}")]
-    InvalidConversion { from: Type, to: Type },
+    #[error("Line {line}: I can't convert {from} to {to}.")]
+    InvalidConversion { from: Type, to: Type, line: usize },
 
-    #[error("Undefined function: {0}")]
-    UndefinedFunction(String),
+    #[error("Line {1}: There's no function called '{0}'. Check the spelling, or define it with 'To {0}...'")]
+    UndefinedFunction(String, usize),
 
-    #[error("Function {0} expects {1} arguments, but {2} were provided")]
-    ArgumentCountMismatch(String, usize, usize),
+    #[error("Line {3}: '{0}' needs {1} value(s), but you gave it {2}.")]
+    ArgumentCountMismatch(String, usize, usize, usize),
 
-    #[error("Function {0} already defined")]
-    FunctionAlreadyDefined(String),
+    #[error("Line {1}: The function '{0}' is already defined.")]
+    FunctionAlreadyDefined(String, usize),
 
-    #[error("Undefined class: {0}")]
-    UndefinedClass(String),
+    #[error("Line {1}: There's no class called '{0}'.")]
+    UndefinedClass(String, usize),
 
-    #[error("Class {0} already defined")]
-    ClassAlreadyDefined(String),
+    #[error("Line {1}: The class '{0}' is already defined.")]
+    ClassAlreadyDefined(String, usize),
 
-    #[error("Undefined property {0} on class {1}")]
-    UndefinedProperty(String, String),
+    #[error("Line {2}: The class '{1}' doesn't have a property called '{0}'.")]
+    UndefinedProperty(String, String, usize),
 
-    #[error("Undefined method {0} on class {1}")]
-    UndefinedMethod(String, String),
+    #[error("Line {2}: The class '{1}' doesn't have a method called '{0}'.")]
+    UndefinedMethod(String, String, usize),
 
-    #[error("Return outside of function")]
-    ReturnOutsideFunction,
+    #[error("Line {0}: 'give back' can only be used inside a function.")]
+    ReturnOutsideFunction(usize),
+
+    #[error("Line {0}: 'stop' can only be used inside a loop (while or for each).")]
+    BreakOutsideLoop(usize),
+
+    #[error("Line {0}: 'skip' can only be used inside a loop (while or for each).")]
+    ContinueOutsideLoop(usize),
 }
 
 /// Function signature for the symbol table
@@ -89,6 +100,10 @@ pub struct SemanticAnalyzer {
     current_function_return_type: Option<Type>,
     /// Builtin function names that allow Int → Float auto-promotion
     builtin_int_promotable: HashSet<String>,
+    /// Current line being analyzed (for error reporting)
+    current_line: usize,
+    /// Whether we're currently inside a loop
+    in_loop: bool,
     /// Collected errors
     pub errors: Vec<SemanticError>,
 }
@@ -102,6 +117,8 @@ impl SemanticAnalyzer {
             current_class: None,
             current_function_return_type: None,
             builtin_int_promotable: HashSet::new(),
+            current_line: 0,
+            in_loop: false,
             errors: Vec::new(),
         };
         analyzer.register_builtin_functions();
@@ -139,7 +156,7 @@ impl SemanticAnalyzer {
     fn declare_variable(&mut self, name: &str, var_type: Type) -> Result<(), SemanticError> {
         let scope = self.scopes.last_mut().unwrap();
         if scope.contains_key(name) {
-            return Err(SemanticError::AlreadyDeclared(name.to_string()));
+            return Err(SemanticError::AlreadyDeclared(name.to_string(), self.current_line));
         }
         scope.insert(
             name.to_string(),
@@ -192,7 +209,10 @@ impl SemanticAnalyzer {
         }
 
         // Analyze top-level statements
-        for stmt in &program.statements {
+        for (i, stmt) in program.statements.iter().enumerate() {
+            if let Some(&line) = program.statement_lines.get(i) {
+                self.current_line = line;
+            }
             if let Err(e) = self.analyze_statement(stmt) {
                 self.errors.push(e);
             }
@@ -207,7 +227,7 @@ impl SemanticAnalyzer {
 
     fn register_function(&mut self, func: &FunctionDef) -> Result<(), SemanticError> {
         if self.functions.contains_key(&func.name) {
-            return Err(SemanticError::FunctionAlreadyDefined(func.name.clone()));
+            return Err(SemanticError::FunctionAlreadyDefined(func.name.clone(), self.current_line));
         }
         self.functions.insert(
             func.name.clone(),
@@ -243,7 +263,7 @@ impl SemanticAnalyzer {
 
     fn register_class(&mut self, class: &ClassDef) -> Result<(), SemanticError> {
         if self.classes.contains_key(&class.name) {
-            return Err(SemanticError::ClassAlreadyDefined(class.name.clone()));
+            return Err(SemanticError::ClassAlreadyDefined(class.name.clone(), self.current_line));
         }
 
         // Collect parent properties/methods if inheriting
@@ -255,7 +275,7 @@ impl SemanticAnalyzer {
                 properties.extend(parent_sig.properties);
                 methods.extend(parent_sig.methods);
             } else {
-                return Err(SemanticError::UndefinedClass(parent_name.clone()));
+                return Err(SemanticError::UndefinedClass(parent_name.clone(), self.current_line));
             }
         }
 
@@ -394,7 +414,7 @@ impl SemanticAnalyzer {
             Statement::Assignment { name, value } => {
                 let symbol = self
                     .lookup_variable(name)
-                    .ok_or_else(|| SemanticError::UndefinedVariable(name.clone()))?;
+                    .ok_or_else(|| SemanticError::UndefinedVariable(name.clone(), self.current_line))?;
                 let expected_type = symbol.symbol_type.clone();
                 let value_type = self.analyze_expression(value)?;
                 self.check_type_compatible(&expected_type, &value_type)?;
@@ -403,7 +423,7 @@ impl SemanticAnalyzer {
             Statement::CompoundAssignment { name, op, value } => {
                 let symbol = self
                     .lookup_variable(name)
-                    .ok_or_else(|| SemanticError::UndefinedVariable(name.clone()))?;
+                    .ok_or_else(|| SemanticError::UndefinedVariable(name.clone(), self.current_line))?;
                 let var_type = symbol.symbol_type.clone();
                 let value_type = self.analyze_expression(value)?;
                 self.check_binary_op_types(op, &var_type, &value_type)?;
@@ -416,6 +436,7 @@ impl SemanticAnalyzer {
             Statement::If {
                 condition,
                 then_block,
+                else_ifs,
                 else_block,
             } => {
                 let cond_type = self.analyze_expression(condition)?;
@@ -423,6 +444,7 @@ impl SemanticAnalyzer {
                     return Err(SemanticError::TypeMismatch {
                         expected: Type::Bool,
                         found: cond_type,
+                        line: self.current_line,
                     });
                 }
 
@@ -431,6 +453,23 @@ impl SemanticAnalyzer {
                     self.analyze_statement(stmt)?;
                 }
                 self.pop_scope();
+
+                // Analyze else-if chains
+                for (elif_cond, elif_block) in else_ifs {
+                    let elif_type = self.analyze_expression(elif_cond)?;
+                    if elif_type != Type::Bool {
+                        return Err(SemanticError::TypeMismatch {
+                            expected: Type::Bool,
+                            found: elif_type,
+                            line: self.current_line,
+                        });
+                    }
+                    self.push_scope();
+                    for stmt in elif_block {
+                        self.analyze_statement(stmt)?;
+                    }
+                    self.pop_scope();
+                }
 
                 if let Some(else_stmts) = else_block {
                     self.push_scope();
@@ -447,14 +486,65 @@ impl SemanticAnalyzer {
                     return Err(SemanticError::TypeMismatch {
                         expected: Type::Bool,
                         found: cond_type,
+                        line: self.current_line,
                     });
                 }
 
+                self.in_loop = true;
                 self.push_scope();
                 for stmt in body {
                     self.analyze_statement(stmt)?;
                 }
                 self.pop_scope();
+                self.in_loop = false;
+            }
+
+            Statement::For {
+                variable,
+                start,
+                end,
+                body,
+            } => {
+                // Check that start and end are integers
+                let start_type = self.analyze_expression(start)?;
+                if start_type != Type::Int {
+                    return Err(SemanticError::TypeMismatch {
+                        expected: Type::Int,
+                        found: start_type,
+                        line: self.current_line,
+                    });
+                }
+
+                let end_type = self.analyze_expression(end)?;
+                if end_type != Type::Int {
+                    return Err(SemanticError::TypeMismatch {
+                        expected: Type::Int,
+                        found: end_type,
+                        line: self.current_line,
+                    });
+                }
+
+                self.in_loop = true;
+                self.push_scope();
+                // Declare the loop variable in the new scope
+                self.declare_variable(variable, Type::Int)?;
+                for stmt in body {
+                    self.analyze_statement(stmt)?;
+                }
+                self.pop_scope();
+                self.in_loop = false;
+            }
+
+            Statement::Break => {
+                if !self.in_loop {
+                    return Err(SemanticError::BreakOutsideLoop(self.current_line));
+                }
+            }
+
+            Statement::Continue => {
+                if !self.in_loop {
+                    return Err(SemanticError::ContinueOutsideLoop(self.current_line));
+                }
             }
 
             Statement::ExprStatement(expr) => {
@@ -463,7 +553,7 @@ impl SemanticAnalyzer {
 
             Statement::Return(expr) => {
                 if self.current_function_return_type.is_none() {
-                    return Err(SemanticError::ReturnOutsideFunction);
+                    return Err(SemanticError::ReturnOutsideFunction(self.current_line));
                 }
                 if let Some(return_expr) = expr {
                     let return_type = self.analyze_expression(return_expr)?;
@@ -481,29 +571,66 @@ impl SemanticAnalyzer {
             } => {
                 let symbol = self
                     .lookup_variable(object)
-                    .ok_or_else(|| SemanticError::UndefinedVariable(object.clone()))?;
+                    .ok_or_else(|| SemanticError::UndefinedVariable(object.clone(), self.current_line))?;
                 let class_name = match &symbol.symbol_type {
                     Type::Class(name) => name.clone(),
                     other => {
                         return Err(SemanticError::TypeMismatch {
                             expected: Type::Class("any".to_string()),
                             found: other.clone(),
-                        })
+                                    line: self.current_line,
+                                    })
                     }
                 };
                 let class_sig = self
                     .classes
                     .get(&class_name)
-                    .ok_or_else(|| SemanticError::UndefinedClass(class_name.clone()))?;
+                    .ok_or_else(|| SemanticError::UndefinedClass(class_name.clone(), self.current_line))?;
                 let prop_type = class_sig
                     .properties
                     .get(property)
                     .ok_or_else(|| {
-                        SemanticError::UndefinedProperty(property.clone(), class_name.clone())
+                        SemanticError::UndefinedProperty(property.clone(), class_name.clone(), self.current_line)
                     })?
                     .clone();
                 let value_type = self.analyze_expression(value)?;
                 self.check_type_compatible(&prop_type, &value_type)?;
+            }
+
+            Statement::Plot {
+                data,
+                against,
+                chart_type: _,
+                title: _,
+                output_file: _,
+            } => {
+                // Validate that data is an array
+                let data_type = self.analyze_expression(data)?;
+                match &data_type {
+                    Type::List(_) => {}
+                    _ => {
+                        return Err(SemanticError::TypeMismatch {
+                            expected: Type::List(Box::new(Type::Float)),
+                            found: data_type,
+                            line: self.current_line,
+                        });
+                    }
+                }
+
+                // If against is provided, validate it's also an array
+                if let Some(against_expr) = against {
+                    let against_type = self.analyze_expression(against_expr)?;
+                    match &against_type {
+                        Type::List(_) => {}
+                        _ => {
+                            return Err(SemanticError::TypeMismatch {
+                                expected: Type::List(Box::new(Type::Float)),
+                                found: against_type,
+                                line: self.current_line,
+                            });
+                        }
+                    }
+                }
             }
         }
 
@@ -520,7 +647,7 @@ impl SemanticAnalyzer {
             Expr::Identifier(name) => {
                 let symbol = self
                     .lookup_variable(name)
-                    .ok_or_else(|| SemanticError::UndefinedVariable(name.clone()))?;
+                    .ok_or_else(|| SemanticError::UndefinedVariable(name.clone(), self.current_line))?;
                 Ok(symbol.symbol_type.clone())
             }
 
@@ -540,7 +667,8 @@ impl SemanticAnalyzer {
                             Err(SemanticError::TypeMismatch {
                                 expected: Type::Int,
                                 found: operand_type,
-                            })
+                                    line: self.current_line,
+                                    })
                         }
                     }
                     UnaryOp::Not => {
@@ -550,7 +678,8 @@ impl SemanticAnalyzer {
                             Err(SemanticError::TypeMismatch {
                                 expected: Type::Bool,
                                 found: operand_type,
-                            })
+                                    line: self.current_line,
+                                    })
                         }
                     }
                 }
@@ -573,7 +702,8 @@ impl SemanticAnalyzer {
                             return Err(SemanticError::TypeMismatch {
                                 expected: first_type,
                                 found: elem_type,
-                            });
+                                    line: self.current_line,
+                                    });
                         }
                     }
                     Ok(Type::List(Box::new(first_type)))
@@ -590,7 +720,8 @@ impl SemanticAnalyzer {
                             return Err(SemanticError::TypeMismatch {
                                 expected: Type::Int,
                                 found: idx_type,
-                            });
+                                    line: self.current_line,
+                                    });
                         }
                         Ok(*inner)
                     }
@@ -599,14 +730,16 @@ impl SemanticAnalyzer {
                             return Err(SemanticError::TypeMismatch {
                                 expected: Type::Int,
                                 found: idx_type,
-                            });
+                                    line: self.current_line,
+                                    });
                         }
                         Ok(Type::Text)
                     }
                     _ => Err(SemanticError::TypeMismatch {
                         expected: Type::List(Box::new(Type::Int)),
                         found: coll_type,
-                    }),
+                                    line: self.current_line,
+                                    }),
                 }
             }
 
@@ -614,14 +747,14 @@ impl SemanticAnalyzer {
                 let sig = self
                     .functions
                     .get(name)
-                    .ok_or_else(|| SemanticError::UndefinedFunction(name.clone()))?
+                    .ok_or_else(|| SemanticError::UndefinedFunction(name.clone(), self.current_line))?
                     .clone();
 
                 if arguments.len() != sig.parameters.len() {
                     return Err(SemanticError::ArgumentCountMismatch(
                         name.clone(),
                         sig.parameters.len(),
-                        arguments.len(),
+                        arguments.len(), self.current_line,
                     ));
                 }
 
@@ -648,14 +781,14 @@ impl SemanticAnalyzer {
                 let class_sig = self
                     .classes
                     .get(class_name)
-                    .ok_or_else(|| SemanticError::UndefinedClass(class_name.clone()))?
+                    .ok_or_else(|| SemanticError::UndefinedClass(class_name.clone(), self.current_line))?
                     .clone();
 
                 if arguments.len() != class_sig.constructor_params.len() {
                     return Err(SemanticError::ArgumentCountMismatch(
                         class_name.clone(),
                         class_sig.constructor_params.len(),
-                        arguments.len(),
+                        arguments.len(), self.current_line,
                     ));
                 }
 
@@ -681,21 +814,22 @@ impl SemanticAnalyzer {
                         return Err(SemanticError::TypeMismatch {
                             expected: Type::Class("any".to_string()),
                             found: other.clone(),
-                        })
+                                    line: self.current_line,
+                                    })
                     }
                 };
 
                 let class_sig = self
                     .classes
                     .get(&class_name)
-                    .ok_or_else(|| SemanticError::UndefinedClass(class_name.clone()))?
+                    .ok_or_else(|| SemanticError::UndefinedClass(class_name.clone(), self.current_line))?
                     .clone();
 
                 let method_sig = class_sig
                     .methods
                     .get(method)
                     .ok_or_else(|| {
-                        SemanticError::UndefinedMethod(method.clone(), class_name.clone())
+                        SemanticError::UndefinedMethod(method.clone(), class_name.clone(), self.current_line)
                     })?
                     .clone();
 
@@ -703,7 +837,7 @@ impl SemanticAnalyzer {
                     return Err(SemanticError::ArgumentCountMismatch(
                         format!("{}.{}", class_name, method),
                         method_sig.parameters.len(),
-                        arguments.len(),
+                        arguments.len(), self.current_line,
                     ));
                 }
 
@@ -725,20 +859,21 @@ impl SemanticAnalyzer {
                         return Err(SemanticError::TypeMismatch {
                             expected: Type::Class("any".to_string()),
                             found: other.clone(),
-                        })
+                                    line: self.current_line,
+                                    })
                     }
                 };
 
                 let class_sig = self
                     .classes
                     .get(&class_name)
-                    .ok_or_else(|| SemanticError::UndefinedClass(class_name.clone()))?;
+                    .ok_or_else(|| SemanticError::UndefinedClass(class_name.clone(), self.current_line))?;
 
                 let prop_type = class_sig
                     .properties
                     .get(property)
                     .ok_or_else(|| {
-                        SemanticError::UndefinedProperty(property.clone(), class_name.clone())
+                        SemanticError::UndefinedProperty(property.clone(), class_name.clone(), self.current_line)
                     })?
                     .clone();
 
@@ -770,7 +905,8 @@ impl SemanticAnalyzer {
                         op: op.clone(),
                         left: left.clone(),
                         right: right.clone(),
-                    })
+                                    line: self.current_line,
+                                    })
                 }
             }
             BinaryOp::Remainder | BinaryOp::Quotient => {
@@ -781,7 +917,8 @@ impl SemanticAnalyzer {
                         op: op.clone(),
                         left: left.clone(),
                         right: right.clone(),
-                    })
+                                    line: self.current_line,
+                                    })
                 }
             }
             BinaryOp::Equal
@@ -797,7 +934,8 @@ impl SemanticAnalyzer {
                         op: op.clone(),
                         left: left.clone(),
                         right: right.clone(),
-                    })
+                                    line: self.current_line,
+                                    })
                 }
             }
             BinaryOp::And | BinaryOp::Or => {
@@ -808,7 +946,8 @@ impl SemanticAnalyzer {
                         op: op.clone(),
                         left: left.clone(),
                         right: right.clone(),
-                    })
+                                    line: self.current_line,
+                                    })
                 }
             }
         }
@@ -821,7 +960,8 @@ impl SemanticAnalyzer {
             Err(SemanticError::TypeMismatch {
                 expected: expected.clone(),
                 found: found.clone(),
-            })
+                                    line: self.current_line,
+                                    })
         }
     }
 
@@ -843,7 +983,8 @@ impl SemanticAnalyzer {
             Err(SemanticError::InvalidConversion {
                 from: from.clone(),
                 to: to.clone(),
-            })
+                                    line: self.current_line,
+                                    })
         }
     }
 }

@@ -1,0 +1,31 @@
+output "Testing for loop:".
+For each i from 1 to 5,
+    output i.
+End.
+
+output "Testing for loop with break:".
+For each i from 1 to 10,
+    If i is greater than 3 then
+        stop.
+    output i.
+End.
+
+output "Testing for loop with continue:".
+For each i from 1 to 5,
+    If i is equal to 3 then
+        skip.
+    output i.
+End.
+
+output "Testing else-if chain:".
+let score be a standard number with value 85.
+If score is greater than 90 then
+    output "A".
+otherwise if score is greater than 80 then
+    output "B".
+otherwise if score is greater than 70 then
+    output "C".
+otherwise
+    output "D".
+
+output "Done!".

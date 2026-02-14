@@ -1,0 +1,32 @@
+output "Testing random functions:".
+
+output "random (0.0 to 1.0):".
+let r1 be a decimal with value the result of random.
+output r1.
+
+let r2 be a decimal with value the result of random.
+output r2.
+
+output "randomBetween (1 to 10):".
+let r3 be a standard number with value the result of randomBetween with 1 and 10.
+output r3.
+
+let r4 be a standard number with value the result of randomBetween with 1 and 10.
+output r4.
+
+output "Testing file I/O:".
+
+let success be a boolean with value the result of writeFile with "test_output.txt" and "Hello from eng-lish!".
+output "writeFile success:".
+output success.
+
+let content be a text with value the result of readFile with "test_output.txt".
+output "readFile content:".
+output content.
+
+output "Reading non-existent file:".
+let missing be a text with value the result of readFile with "nonexistent.txt".
+output missing.
+output "(empty string expected)".
+
+output "All tests complete!".
