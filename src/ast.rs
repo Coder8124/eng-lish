@@ -116,6 +116,15 @@ pub enum UnaryOp {
     Not,     // not
 }
 
+/// Chart types for plotting
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChartType {
+    Line,
+    Bar,
+    Scatter,
+    Histogram,
+}
+
 /// Expressions in eng-lish
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -214,10 +223,11 @@ pub enum Statement {
     /// Output statement: output "Hello World".
     Output(Expr),
 
-    /// If statement: If x is greater than 5 then ... otherwise ...
+    /// If statement: If x is greater than 5 then ... otherwise if ... otherwise ...
     If {
         condition: Expr,
         then_block: Vec<Statement>,
+        else_ifs: Vec<(Expr, Vec<Statement>)>,
         else_block: Option<Vec<Statement>>,
     },
 
@@ -226,6 +236,20 @@ pub enum Statement {
         condition: Expr,
         body: Vec<Statement>,
     },
+
+    /// For loop: For each x from 1 to 10, ...
+    For {
+        variable: String,
+        start: Expr,
+        end: Expr,
+        body: Vec<Statement>,
+    },
+
+    /// Break statement: stop.
+    Break,
+
+    /// Continue statement: skip.
+    Continue,
 
     /// Expression statement (for side effects)
     ExprStatement(Expr),
@@ -239,6 +263,15 @@ pub enum Statement {
         property: String,
         value: Expr,
     },
+
+    /// Plot statement: plot data as a line chart titled "Title" to "file.html".
+    Plot {
+        data: Expr,
+        against: Option<Expr>,
+        chart_type: ChartType,
+        title: Option<String>,
+        output_file: String,
+    },
 }
 
 /// A complete eng-lish program
@@ -247,6 +280,8 @@ pub struct Program {
     pub classes: Vec<ClassDef>,
     pub functions: Vec<FunctionDef>,
     pub statements: Vec<Statement>,
+    /// Line numbers corresponding to each statement (parallel to statements vec)
+    pub statement_lines: Vec<usize>,
 }
 
 impl Program {
@@ -255,6 +290,7 @@ impl Program {
             classes: Vec::new(),
             functions: Vec::new(),
             statements: Vec::new(),
+            statement_lines: Vec::new(),
         }
     }
 }

@@ -1,0 +1,23 @@
+output "Testing utility functions:".
+
+output "textToNumber:".
+let num be a standard number with value the result of textToNumber with "42".
+output num.
+
+output "textToDecimal:".
+let dec be a decimal with value the result of textToDecimal with "3.14159".
+output dec.
+
+output "numberToText:".
+let txt be a text with value the result of numberToText with 12345.
+output txt.
+
+output "decimalToText:".
+let ftxt be a text with value the result of decimalToText with 2.71828.
+output ftxt.
+
+output "Sleeping for 500ms...".
+Call sleep with 500.
+output "Done sleeping!".
+
+output "All tests passed!".

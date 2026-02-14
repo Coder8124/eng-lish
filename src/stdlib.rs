@@ -20,6 +20,10 @@ pub fn get_all_builtins() -> Vec<BuiltinFunction> {
     let mut builtins = Vec::new();
     builtins.extend(get_math_builtins());
     builtins.extend(get_string_builtins());
+    builtins.extend(get_io_builtins());
+    builtins.extend(get_utility_builtins());
+    builtins.extend(get_array_builtins());
+    builtins.extend(get_ml_builtins());
     builtins
 }
 
@@ -190,6 +194,221 @@ pub fn get_string_builtins() -> Vec<BuiltinFunction> {
             names: vec!["contains", "has"],
             parameters: vec![("haystack", Type::Text), ("needle", Type::Text)],
             return_type: Type::Bool,
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+    ]
+}
+
+pub fn get_io_builtins() -> Vec<BuiltinFunction> {
+    vec![
+        BuiltinFunction {
+            names: vec!["readLine", "readln", "input"],
+            parameters: vec![],
+            return_type: Type::Text,
+            c_function: None, // custom implementation with fgets
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["readNumber", "readnum"],
+            parameters: vec![],
+            return_type: Type::Int,
+            c_function: None, // custom implementation with scanf
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["readFile"],
+            parameters: vec![("path", Type::Text)],
+            return_type: Type::Text,
+            c_function: None, // custom implementation with fopen/fread
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["writeFile"],
+            parameters: vec![("path", Type::Text), ("content", Type::Text)],
+            return_type: Type::Bool,
+            c_function: None, // custom implementation with fopen/fwrite
+            accepts_int_as_float: false,
+        },
+    ]
+}
+
+pub fn get_utility_builtins() -> Vec<BuiltinFunction> {
+    vec![
+        BuiltinFunction {
+            names: vec!["textToNumber", "parseInt"],
+            parameters: vec![("s", Type::Text)],
+            return_type: Type::Int,
+            c_function: Some("atoll"),
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["textToDecimal", "parseFloat"],
+            parameters: vec![("s", Type::Text)],
+            return_type: Type::Float,
+            c_function: Some("atof"),
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["numberToText", "intToString"],
+            parameters: vec![("n", Type::Int)],
+            return_type: Type::Text,
+            c_function: None, // custom implementation with snprintf
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["decimalToText", "floatToString"],
+            parameters: vec![("f", Type::Float)],
+            return_type: Type::Text,
+            c_function: None, // custom implementation with snprintf
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["sleep", "wait", "delay"],
+            parameters: vec![("ms", Type::Int)],
+            return_type: Type::Void,
+            c_function: None, // custom implementation with usleep
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["random"],
+            parameters: vec![],
+            return_type: Type::Float,
+            c_function: None, // custom implementation with rand()
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["randomBetween", "randomInt"],
+            parameters: vec![("min", Type::Int), ("max", Type::Int)],
+            return_type: Type::Int,
+            c_function: None, // custom implementation with rand()
+            accepts_int_as_float: false,
+        },
+    ]
+}
+
+pub fn get_array_builtins() -> Vec<BuiltinFunction> {
+    vec![
+        // Array creation
+        BuiltinFunction {
+            names: vec!["zeros"],
+            parameters: vec![("n", Type::Int)],
+            return_type: Type::List(Box::new(Type::Float)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["ones"],
+            parameters: vec![("n", Type::Int)],
+            return_type: Type::List(Box::new(Type::Float)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["range"],
+            parameters: vec![("start", Type::Int), ("end", Type::Int)],
+            return_type: Type::List(Box::new(Type::Int)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        // Array aggregation
+        BuiltinFunction {
+            names: vec!["sum"],
+            parameters: vec![("arr", Type::List(Box::new(Type::Float)))],
+            return_type: Type::Float,
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["mean", "average"],
+            parameters: vec![("arr", Type::List(Box::new(Type::Float)))],
+            return_type: Type::Float,
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["arrayLength", "len"],
+            parameters: vec![("arr", Type::List(Box::new(Type::Int)))],
+            return_type: Type::Int,
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["arrayMin", "minOf"],
+            parameters: vec![("arr", Type::List(Box::new(Type::Float)))],
+            return_type: Type::Float,
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["arrayMax", "maxOf"],
+            parameters: vec![("arr", Type::List(Box::new(Type::Float)))],
+            return_type: Type::Float,
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        // Array manipulation
+        BuiltinFunction {
+            names: vec!["append", "push"],
+            parameters: vec![("arr", Type::List(Box::new(Type::Int))), ("value", Type::Int)],
+            return_type: Type::List(Box::new(Type::Int)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["reverse"],
+            parameters: vec![("arr", Type::List(Box::new(Type::Int)))],
+            return_type: Type::List(Box::new(Type::Int)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+    ]
+}
+
+pub fn get_ml_builtins() -> Vec<BuiltinFunction> {
+    vec![
+        // Statistics
+        BuiltinFunction {
+            names: vec!["standardDeviation", "stdDev", "std"],
+            parameters: vec![("arr", Type::List(Box::new(Type::Float)))],
+            return_type: Type::Float,
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["variance", "var"],
+            parameters: vec![("arr", Type::List(Box::new(Type::Float)))],
+            return_type: Type::Float,
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["correlation", "corr"],
+            parameters: vec![("x", Type::List(Box::new(Type::Float))), ("y", Type::List(Box::new(Type::Float)))],
+            return_type: Type::Float,
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        // Linear Regression
+        BuiltinFunction {
+            names: vec!["fitLine", "linearRegression"],
+            parameters: vec![("x", Type::List(Box::new(Type::Float))), ("y", Type::List(Box::new(Type::Float)))],
+            return_type: Type::List(Box::new(Type::Float)), // [slope, intercept]
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["predictLinear"],
+            parameters: vec![("coefficients", Type::List(Box::new(Type::Float))), ("x", Type::Float)],
+            return_type: Type::Float,
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        // Clustering
+        BuiltinFunction {
+            names: vec!["kMeans", "cluster"],
+            parameters: vec![("data", Type::List(Box::new(Type::Float))), ("k", Type::Int)],
+            return_type: Type::List(Box::new(Type::Int)), // cluster assignments
             c_function: None,
             accepts_int_as_float: false,
         },

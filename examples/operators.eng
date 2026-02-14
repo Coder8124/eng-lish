@@ -1,0 +1,25 @@
+let x be a standard number with value 10.
+let y be a standard number with value 3.
+
+output "Testing remainder and quotient:".
+output remainder x by y.
+output quotient x by y.
+
+output "Testing negative:".
+output negative 42.
+
+output "Testing not:".
+output not true.
+output not false.
+
+output "Testing and/or:".
+output true and true.
+output true and false.
+output true or false.
+output false or false.
+
+output "Testing combined:".
+let flag1 be a boolean with value true.
+let flag2 be a boolean with value false.
+output flag1 and not flag2.
+output not flag1 or flag2.

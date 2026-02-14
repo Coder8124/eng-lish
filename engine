@@ -21,9 +21,19 @@ if [ ! -f "$SOURCE" ]; then
     fi
 fi
 
+# Use local build if available, otherwise fall back to installed version
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$SCRIPT_DIR/target/debug/englishc" ]; then
+    COMPILER="$SCRIPT_DIR/target/debug/englishc"
+elif [ -f "$SCRIPT_DIR/target/release/englishc" ]; then
+    COMPILER="$SCRIPT_DIR/target/release/englishc"
+else
+    COMPILER="englishc"
+fi
+
 # If --ir flag, just print IR and exit
 if [[ "$*" == *"--ir"* ]]; then
-    englishc "$SOURCE" --ir
+    "$COMPILER" "$SOURCE" --ir
     exit 0
 fi
 
@@ -32,7 +42,7 @@ BASENAME=$(basename "$SOURCE" .eng)
 TMPBIN="/tmp/eng-lish-$BASENAME"
 
 # Compile
-englishc "$SOURCE"
+"$COMPILER" "$SOURCE"
 
 # Move binary to temp location (englishc outputs to current dir with source stem name)
 mv "$BASENAME" "$TMPBIN" 2>/dev/null || true
