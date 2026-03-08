@@ -2,7 +2,8 @@
 
 **A programming language that reads like English.**
 
-Write code the way you think — in plain, readable sentences.
+Write code the way you think in plain, readable sentences.
+And you never need to comment!
 
 ```
 let message be a text with value "Hello, World!".
@@ -11,9 +12,9 @@ output message.
 
 ---
 
-## Why eng-lish?
+## Why to use eng-lish?
 
-Most programming languages prioritize brevity over clarity. eng-lish takes the opposite approach: **code should be readable by anyone**, even those who have never programmed before.
+Most programming languages prioritize brevity over clarity. eng-lish takes the opposite approach: **code should be readable by anyone**, especially for those who have never programmed before.
 
 ```
 let age be a standard number with value 25.
@@ -24,7 +25,7 @@ otherwise
     output "Too young to vote.".
 ```
 
-No cryptic symbols. No memorizing operator precedence. Just English.
+No complicated syntax or mind-scratching data types. Just plain, readable Eng-Lish.
 
 ---
 

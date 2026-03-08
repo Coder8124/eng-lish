@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7289DA"/>
+      <stop offset="100%" stop-color="#5865F2"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded background -->
+  <rect x="4" y="4" width="120" height="120" rx="28" ry="28" fill="url(#bg)"/>
+  <!-- Chat bubble -->
+  <path d="M32 38 h64 a10 10 0 0 1 10 10 v30 a10 10 0 0 1 -10 10 H62 l-16 14 v-14 H32 a10 10 0 0 1 -10 -10 V48 a10 10 0 0 1 10 -10z" fill="white" opacity="0.95"/>
+  <!-- Sparkle/AI symbol - 4-point star -->
+  <path d="M64 46 L67 56 L77 59 L67 62 L64 72 L61 62 L51 59 L61 56 Z" fill="#5865F2"/>
+  <!-- Small sparkle top-right -->
+  <path d="M82 42 L83.5 47 L88.5 48.5 L83.5 50 L82 55 L80.5 50 L75.5 48.5 L80.5 47 Z" fill="#5865F2" opacity="0.6"/>
+  <!-- Small sparkle bottom-left -->
+  <path d="M44 62 L45.2 66 L49.2 67.2 L45.2 68.4 L44 72.4 L42.8 68.4 L38.8 67.2 L42.8 66 Z" fill="#5865F2" opacity="0.6"/>
+</svg>
