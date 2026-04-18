@@ -116,6 +116,7 @@ impl Parser {
     }
 
     fn parse_program(&mut self) -> Result<Program, ParseError> {
+        let mut imports = Vec::new();
         let mut classes = Vec::new();
         let mut functions = Vec::new();
         let mut statements = Vec::new();
@@ -123,6 +124,24 @@ impl Parser {
 
         while !self.is_at_end() {
             match self.current() {
+                Some(Token::Use) => {
+                    self.advance();
+                    match self.current().cloned() {
+                        Some(Token::StringLiteral(name)) => {
+                            self.advance();
+                            self.expect(Token::Period)?;
+                            imports.push(name);
+                        }
+                        Some(tok) => {
+                            return Err(ParseError::UnexpectedToken {
+                                expected: "a package name in quotes".to_string(),
+                                found: tok,
+                                line: self.current_line(),
+                            });
+                        }
+                        None => return Err(ParseError::UnexpectedEof),
+                    }
+                }
                 // "Define a kind called ..." -> class definition
                 Some(Token::Define) => {
                     classes.push(self.parse_class_def()?);
@@ -140,6 +159,7 @@ impl Parser {
         }
 
         Ok(Program {
+            imports,
             classes,
             functions,
             statements,

@@ -242,6 +242,9 @@ pub enum Token {
     #[token("set", ignore(case))]
     Set,
 
+    #[token("use", ignore(case))]
+    Use,
+
     // Type conversion (signifier)
     #[token("of", ignore(case))]
     Of,

@@ -277,6 +277,7 @@ pub enum Statement {
 /// A complete eng-lish program
 #[derive(Debug, Clone)]
 pub struct Program {
+    pub imports: Vec<String>,
     pub classes: Vec<ClassDef>,
     pub functions: Vec<FunctionDef>,
     pub statements: Vec<Statement>,
@@ -287,11 +288,17 @@ pub struct Program {
 impl Program {
     pub fn new() -> Self {
         Self {
+            imports: Vec::new(),
             classes: Vec::new(),
             functions: Vec::new(),
             statements: Vec::new(),
             statement_lines: Vec::new(),
         }
+    }
+
+    pub fn merge(&mut self, other: Program) {
+        self.classes.extend(other.classes);
+        self.functions.extend(other.functions);
     }
 }
 
