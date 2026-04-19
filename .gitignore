@@ -1,1 +1,23 @@
 /target
+
+# compiled eng-lish output
+*.o
+test_remainder
+engine
+
+# compiled example binaries (no extension on macOS/Linux)
+examples/hello
+examples/loops
+examples/functions
+examples/arrays
+examples/strings
+examples/math
+examples/classes
+examples/io
+examples/files
+examples/operators
+examples/variables
+examples/greeting
+examples/ml
+examples/debug
+examples/packages_demo
