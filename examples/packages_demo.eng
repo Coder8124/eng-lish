@@ -1,0 +1,65 @@
+use "numeric".
+use "algorithm".
+use "geometry".
+
+output "=== numeric ===".
+output "10! =".
+output the result of factorial with 10.
+
+output "fibonacci(10) =".
+output the result of fibonacci with 10.
+
+output "gcd(48, 18) =".
+output the result of gcd with 48 and 18.
+
+output "lcm(4, 6) =".
+output the result of lcm with 4 and 6.
+
+output "isPrime(17) =".
+output the result of isPrime with 17.
+
+output "isPrime(18) =".
+output the result of isPrime with 18.
+
+output "sumUpTo(100) =".
+output the result of sumUpTo with 100.
+
+output "".
+output "=== algorithm ===".
+let data be a list of standard number with value [3, 7, 1, 9, 4, 6, 2].
+
+output "clamp(15, 0, 10) =".
+output the result of clamp with 15 and 0 and 10.
+
+output "linearSearch for 9 =".
+output the result of linearSearch with data and 9.
+
+output "linearSearch for 99 =".
+output the result of linearSearch with data and 99.
+
+output "countOccurrences of 4 =".
+output the result of countOccurrences with data and 4.
+
+output "maxIndex =".
+output the result of maxIndex with data.
+
+output "".
+output "=== geometry ===".
+output "distance (0,0) to (3,4) =".
+output the result of distance with 0.0 and 0.0 and 3.0 and 4.0.
+
+output "hypotenuse(3, 4) =".
+output the result of hypotenuse with 3.0 and 4.0.
+
+output "circleArea(5) =".
+output the result of circleArea with 5.0.
+
+output "triangleArea(6, 4) =".
+output the result of triangleArea with 6.0 and 4.0.
+
+output "90 degrees in radians =".
+output the result of degreesToRadians with 90.0.
+
+let p be a Point created with 0.0 and 0.0.
+output "Point (0,0) to (3,4) =".
+output the result of asking p to distanceTo with 3.0 and 4.0.

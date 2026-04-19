@@ -1,0 +1,80 @@
+To distance with a decimal x1 and a decimal y1 and a decimal x2 and a decimal y2 returning a decimal:
+    let dx be a decimal with value x2.
+    Subtract x1 from dx.
+    let dy be a decimal with value y2.
+    Subtract y1 from dy.
+    let dx2 be a decimal with value the result of power with dx and 2.0.
+    let dy2 be a decimal with value the result of power with dy and 2.0.
+    let sumSq be a decimal with value dx2.
+    Add dy2 to sumSq.
+    Give back the result of squareRoot with sumSq.
+End.
+
+To hypotenuse with a decimal a and a decimal b returning a decimal:
+    let a2 be a decimal with value the result of power with a and 2.0.
+    let b2 be a decimal with value the result of power with b and 2.0.
+    let sumSq be a decimal with value a2.
+    Add b2 to sumSq.
+    Give back the result of squareRoot with sumSq.
+End.
+
+To triangleArea with a decimal base and a decimal height returning a decimal:
+    let area be a decimal with value base.
+    Multiply area by height.
+    Divide area by 2.0.
+    Give back area.
+End.
+
+To circleArea with a decimal radius returning a decimal:
+    let pi be a decimal with value 3.14159265358979.
+    let area be a decimal with value pi.
+    Multiply area by radius.
+    Multiply area by radius.
+    Give back area.
+End.
+
+To circumference with a decimal radius returning a decimal:
+    let pi be a decimal with value 3.14159265358979.
+    let c be a decimal with value 2.0.
+    Multiply c by pi.
+    Multiply c by radius.
+    Give back c.
+End.
+
+To degreesToRadians with a decimal degrees returning a decimal:
+    let pi be a decimal with value 3.14159265358979.
+    let radians be a decimal with value degrees.
+    Multiply radians by pi.
+    Divide radians by 180.0.
+    Give back radians.
+End.
+
+To radiansToDegrees with a decimal radians returning a decimal:
+    let pi be a decimal with value 3.14159265358979.
+    let degrees be a decimal with value radians.
+    Multiply degrees by 180.0.
+    Divide degrees by pi.
+    Give back degrees.
+End.
+
+Define a kind called Point with the following:
+    Property x is a decimal.
+    Property y is a decimal.
+
+    To create with a decimal px and a decimal py:
+        Set x to px.
+        Set y to py.
+    End create.
+
+    To distanceTo with a decimal ox and a decimal oy returning a decimal:
+        let dx be a decimal with value ox.
+        Subtract x from dx.
+        let dy be a decimal with value oy.
+        Subtract y from dy.
+        let dx2 be a decimal with value the result of power with dx and 2.0.
+        let dy2 be a decimal with value the result of power with dy and 2.0.
+        let sumSq be a decimal with value dx2.
+        Add dy2 to sumSq.
+        Give back the result of squareRoot with sumSq.
+    End.
+End kind.

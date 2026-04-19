@@ -1,0 +1,62 @@
+To factorial with a standard number n returning a standard number:
+    let result be a standard number with value 1.
+    For each i from 1 to n,
+        Multiply result by i.
+    End.
+    Give back result.
+End.
+
+To fibonacci with a standard number n returning a standard number:
+    If n is equal to 0 then
+        Give back 0.
+    If n is equal to 1 then
+        Give back 1.
+    let a be a standard number with value 0.
+    let b be a standard number with value 1.
+    let count be a standard number with value 2.
+    While count is less than n or count is equal to n,
+        let temp be a standard number with value b.
+        Add a to b.
+        Set a to temp.
+        Add 1 to count.
+    End.
+    Give back b.
+End.
+
+To gcd with a standard number a and a standard number b returning a standard number:
+    While b is not equal to 0,
+        let temp be a standard number with value b.
+        Set b to remainder a by b.
+        Set a to temp.
+    End.
+    Give back a.
+End.
+
+To lcm with a standard number a and a standard number b returning a standard number:
+    let g be a standard number with value the result of gcd with a and b.
+    let product be a standard number with value a.
+    Multiply product by b.
+    let result be a standard number with value quotient product by g.
+    Give back result.
+End.
+
+To isPrime with a standard number n returning a boolean:
+    If n is less than 2 then
+        Give back false.
+    let i be a standard number with value 2.
+    While i is less than n,
+        let rem be a standard number with value remainder n by i.
+        If rem is equal to 0 then
+            Give back false.
+        Add 1 to i.
+    End.
+    Give back true.
+End.
+
+To sumUpTo with a standard number n returning a standard number:
+    let total be a standard number with value 0.
+    For each i from 1 to n,
+        Add i to total.
+    End.
+    Give back total.
+End.

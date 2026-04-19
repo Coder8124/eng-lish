@@ -22,8 +22,11 @@ fn packages_dir() -> PathBuf {
 }
 
 fn resolve_package_path(name: &str, source_dir: &Path) -> Option<PathBuf> {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let candidates = [
         source_dir.join(format!("{}.eng", name)),
+        cwd.join("packages").join(name).join(format!("{}.eng", name)),
+        cwd.join("packages").join(name).join("main.eng"),
         packages_dir().join(name).join(format!("{}.eng", name)),
         packages_dir().join(name).join("main.eng"),
     ];

@@ -1,0 +1,66 @@
+To clamp with a standard number value and a standard number low and a standard number high returning a standard number:
+    If value is less than low then
+        Give back low.
+    If value is greater than high then
+        Give back high.
+    Give back value.
+End.
+
+To clampDecimal with a decimal value and a decimal low and a decimal high returning a decimal:
+    If value is less than low then
+        Give back low.
+    If value is greater than high then
+        Give back high.
+    Give back value.
+End.
+
+To linearSearch with a list of standard number arr and a standard number target returning a standard number:
+    let n be a standard number with value the result of arrayLength with arr.
+    let last be a standard number with value n.
+    Subtract 1 from last.
+    For each i from 0 to last,
+        If arr[i] is equal to target then
+            Give back i.
+    End.
+    Give back negative 1.
+End.
+
+To countOccurrences with a list of standard number arr and a standard number target returning a standard number:
+    let n be a standard number with value the result of arrayLength with arr.
+    let last be a standard number with value n.
+    Subtract 1 from last.
+    let count be a standard number with value 0.
+    For each i from 0 to last,
+        If arr[i] is equal to target then
+            Add 1 to count.
+    End.
+    Give back count.
+End.
+
+To maxIndex with a list of standard number arr returning a standard number:
+    let n be a standard number with value the result of arrayLength with arr.
+    let last be a standard number with value n.
+    Subtract 1 from last.
+    let bestIdx be a standard number with value 0.
+    let bestVal be a standard number with value arr[0].
+    For each i from 1 to last,
+        If arr[i] is greater than bestVal then
+            Set bestIdx to i.
+            Set bestVal to arr[i].
+    End.
+    Give back bestIdx.
+End.
+
+To minIndex with a list of standard number arr returning a standard number:
+    let n be a standard number with value the result of arrayLength with arr.
+    let last be a standard number with value n.
+    Subtract 1 from last.
+    let bestIdx be a standard number with value 0.
+    let bestVal be a standard number with value arr[0].
+    For each i from 1 to last,
+        If arr[i] is less than bestVal then
+            Set bestIdx to i.
+            Set bestVal to arr[i].
+    End.
+    Give back bestIdx.
+End.
