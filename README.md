@@ -1,9 +1,8 @@
 # eng-lish
 
-**A programming language that reads like English.**
+**A compiled programming language that reads like English.**
 
-Write code the way you think in plain, readable sentences.
-And you never need to comment!
+Write code the way you think — in plain, readable sentences. No symbols to memorize, no syntax to look up.
 
 ```
 let message be a text with value "Hello, World!".
@@ -12,9 +11,9 @@ output message.
 
 ---
 
-## Why to use eng-lish?
+## Why eng-lish?
 
-Most programming languages prioritize brevity over clarity. eng-lish takes the opposite approach: **code should be readable by anyone**, especially for those who have never programmed before.
+Most languages prioritize brevity over clarity. eng-lish takes the opposite approach: **code should be readable by anyone**, even those who have never programmed before.
 
 ```
 let age be a standard number with value 25.
@@ -25,7 +24,7 @@ otherwise
     output "Too young to vote.".
 ```
 
-No complicated syntax or mind-scratching data types. Just plain, readable Eng-Lish.
+eng-lish compiles to native machine code via LLVM — so it's readable *and* fast.
 
 ---
 
@@ -34,17 +33,24 @@ No complicated syntax or mind-scratching data types. Just plain, readable Eng-Li
 ### Prerequisites
 - [Rust](https://rustup.rs/) (1.70+)
 - LLVM 18+ (`brew install llvm` on macOS)
+- Clang (for linking)
 
 ### Build from source
 ```bash
-git clone https://github.com/yourusername/eng-lish.git
+git clone https://github.com/Coder8124/eng-lish.git
 cd eng-lish
 cargo install --path .
 ```
 
-### Run a program
+### Compile and run a program
 ```bash
-./engine examples/hello.eng
+englishc examples/hello.eng
+./hello
+```
+
+### Print LLVM IR (for debugging)
+```bash
+englishc examples/hello.eng --ir
 ```
 
 ---
@@ -52,8 +58,6 @@ cargo install --path .
 ## Language Guide
 
 ### Variables
-
-Declare variables with `let`:
 
 ```
 let name be a text with value "Alice".
@@ -63,55 +67,57 @@ let isStudent be a boolean with value true.
 ```
 
 **Types:**
+
 | eng-lish | Description |
-|----------|-------------|
-| `standard number` | Integer (64-bit) |
-| `decimal` | Float (64-bit) |
+|---|---|
+| `standard number` | 64-bit integer |
+| `decimal` | 64-bit float |
 | `text` | String |
-| `boolean` | True/False |
+| `boolean` | `true` / `false` |
+| `list of <type>` | Typed array |
 
 ### Output
 
 ```
 output "Hello!".
 output age.
-output name.
 ```
 
 ### Arithmetic
 
+**Compound assignment** (modifies in place):
 ```
 let x be a standard number with value 10.
-let y be a standard number with value 3.
 
 Add 5 to x.
-Subtract 2 from y.
-Multiply x by 2.
+Subtract 2 from x.
+Multiply x by 3.
 Divide x by 4.
-
-output remainder x by y.
-output quotient x by y.
 ```
 
-### Comparisons
+**Expressions:**
+```
+output remainder x by 3.
+output quotient x by 3.
+```
+
+### Comparisons and Logic
 
 ```
 If x is greater than 5 then
     output "big".
 
-If name is equal to "Alice" then
-    output "Hi Alice!".
+If x is less than 5 then
+    output "small".
+
+If x is equal to 5 then
+    output "just right".
 
 If x is not equal to 0 then
     output "not zero".
 ```
 
-### Logic
-
 ```
-let sunny be a boolean with value true.
-let warm be a boolean with value false.
-
 If sunny and warm then
     output "Perfect day!".
 
@@ -120,55 +126,6 @@ If sunny or warm then
 
 If not sunny then
     output "Bring an umbrella.".
-```
-
-### Loops
-
-**For loops:**
-```
-For each i from 1 to 10,
-    output i.
-End.
-```
-
-**While loops:**
-```
-let count be a standard number with value 0.
-While count is less than 5,
-    output count.
-    Add 1 to count.
-```
-
-**Control flow:**
-```
-For each i from 1 to 100,
-    If i is equal to 5 then
-        stop.
-    If remainder i by 2 is equal to 0 then
-        skip.
-    output i.
-End.
-```
-
-### Functions
-
-```
-To greet someone named name (a text),
-    output "Hello, ".
-    output name.
-End.
-
-Call greet with "World".
-```
-
-**With return values:**
-```
-To add together x (a standard number) and y (a standard number) returning a standard number,
-    give back x plus y.
-End.
-
-let sum be a standard number with value the result of add with 3 and 4.
-output sum.
 ```
 
 ### If-Else Chains
@@ -186,76 +143,230 @@ otherwise
     output "F".
 ```
 
+### Loops
+
+**For loop:**
+```
+For each i from 1 to 10,
+    output i.
+End.
+```
+
+**While loop:**
+```
+let count be a standard number with value 0.
+While count is less than 5,
+    output count.
+    Add 1 to count.
+End.
+```
+
+**Break and continue:**
+```
+For each i from 1 to 100,
+    If remainder i by 2 is equal to 0 then
+        skip.
+    If i is greater than 9 then
+        stop.
+    output i.
+End.
+```
+
+### Functions
+
+```
+To double with a standard number x returning a standard number:
+    let result be a standard number with value x.
+    Multiply result by 2.
+    Give back result.
+End.
+
+let answer be a standard number with value the result of double with 21.
+output answer.
+```
+
+Functions with no return value use `returning nothing`:
+```
+To greet with a text name returning nothing:
+    output "Hello, ".
+    output name.
+End.
+
+Call greet with "World".
+```
+
+### Classes
+
+```
+Define a kind called Counter with the following:
+    Property count is a standard number.
+
+    To create with a standard number initial:
+        Set count to initial.
+    End create.
+
+    To increment returning nothing:
+        Add 1 to count.
+    End.
+
+    To getValue returning a standard number:
+        Give back count.
+    End.
+End kind.
+
+let c be a Counter created with 0.
+Ask c to increment.
+Ask c to increment.
+output the result of asking c to getValue.
+```
+
+### Lists
+
+```
+let numbers be a list of standard number with value [10, 20, 30, 40, 50].
+
+output numbers[0].
+output numbers[2].
+
+let size be a standard number with value the result of arrayLength with numbers.
+let extended be a list of standard number with value the result of append with numbers and 60.
+let flipped be a list of standard number with value the result of reverse with numbers.
+```
+
 ---
 
 ## Standard Library
 
-### Math Functions
+### Math
 
-| Function | Description | Example |
-|----------|-------------|---------|
-| `squareRoot` | Square root | `the result of squareRoot with 16` |
-| `absoluteValue` | Absolute value | `the result of absoluteValue with -5` |
-| `power` | Exponentiation | `the result of power with 2 and 10` |
-| `floor` / `ceiling` / `round` | Rounding | `the result of floor with 3.7` |
-| `sine` / `cosine` / `tangent` | Trigonometry | `the result of sine with 0` |
-| `minimum` / `maximum` | Min/Max | `the result of minimum with 3 and 7` |
-| `naturalLog` / `logarithm` | Logarithms | `the result of naturalLog with 2.718` |
-| `random` | Random 0.0-1.0 | `the result of random` |
-| `randomBetween` | Random in range | `the result of randomBetween with 1 and 100` |
+| Function | Description |
+|---|---|
+| `squareRoot` | Square root |
+| `absoluteValue` | Absolute value |
+| `power` | Exponentiation |
+| `floor` / `ceiling` / `round` | Rounding |
+| `sine` / `cosine` / `tangent` | Trig |
+| `arcSine` / `arcCosine` / `arcTangent` | Inverse trig |
+| `naturalLog` / `logarithm` / `exponential` | Logarithms |
+| `minimum` / `maximum` | Min/Max of two values |
+| `random` | Random decimal 0.0–1.0 |
+| `randomBetween` | Random integer in range |
 
-### String Functions
+### Text
 
-| Function | Description | Example |
-|----------|-------------|---------|
-| `lengthOf` | String length | `the result of lengthOf with "hello"` |
-| `combine` | Concatenate | `the result of combine with "Hello" and "World"` |
-| `characterAt` | Get character | `the result of characterAt with "hello" and 0` |
-| `uppercase` / `lowercase` | Case conversion | `the result of uppercase with "hello"` |
-| `contains` | Substring check | `the result of contains with "hello" and "ell"` |
+| Function | Description |
+|---|---|
+| `lengthOf` | String length |
+| `combine` | Concatenate two strings |
+| `characterAt` | Character at index |
+| `uppercase` / `lowercase` | Case conversion |
+| `contains` | Substring check |
 
-### I/O Functions
+### Input / Output
 
-| Function | Description | Example |
-|----------|-------------|---------|
-| `readLine` | Read text input | `the result of readLine` |
-| `readNumber` | Read number input | `the result of readNumber` |
-| `readFile` | Read file contents | `the result of readFile with "data.txt"` |
-| `writeFile` | Write to file | `the result of writeFile with "out.txt" and "Hello"` |
+| Function | Description |
+|---|---|
+| `readLine` | Read a line of text from stdin |
+| `readNumber` | Read an integer from stdin |
+| `readFile` | Read entire file as text |
+| `writeFile` | Write text to a file |
 
-### Utility Functions
+### Conversion
 
-| Function | Description | Example |
-|----------|-------------|---------|
-| `textToNumber` | Parse int | `the result of textToNumber with "42"` |
-| `textToDecimal` | Parse float | `the result of textToDecimal with "3.14"` |
-| `numberToText` | Int to string | `the result of numberToText with 42` |
-| `decimalToText` | Float to string | `the result of decimalToText with 3.14` |
-| `sleep` | Pause (ms) | `Call sleep with 1000` |
+| Function | Description |
+|---|---|
+| `textToNumber` | Parse integer from text |
+| `textToDecimal` | Parse decimal from text |
+| `numberToText` | Integer to text |
+| `decimalToText` | Decimal to text |
+| `sleep` | Pause for N milliseconds |
 
-### Array Functions
+### Arrays
 
-eng-lish includes NumPy-inspired array operations for working with lists of numbers.
+| Function | Description |
+|---|---|
+| `zeros` / `ones` | Create array of zeros or ones |
+| `range` | Create integer range array |
+| `arrayLength` | Length of an array |
+| `sum` / `mean` | Aggregate an array |
+| `arrayMin` / `arrayMax` | Min/max of an array |
+| `append` / `reverse` | Manipulate arrays |
+| `standardDeviation` / `variance` | Statistics |
+| `correlation` | Pearson correlation |
+| `fitLine` / `predictLinear` | Linear regression |
 
-**Array Literals and Indexing:**
+---
+
+## Package Manager
+
+eng-lish has a built-in package manager. Packages are `.eng` files — just functions and classes your program can `use`.
+
+### Using a package
+
 ```
-let arr be a list of standard number with value [1, 2, 3, 4, 5].
-output arr[0].
-output arr[2].
+use "numeric".
+use "geometry".
+
+output the result of factorial with 10.
+output the result of circleArea with 5.0.
 ```
 
-| Function | Description | Example |
-|----------|-------------|---------|
-| `zeros` | Create array of zeros | `the result of zeros with 5` |
-| `ones` | Create array of ones | `the result of ones with 5` |
-| `range` | Create range array | `the result of range with 1 and 10` |
-| `arrayLength` / `len` | Get array length | `the result of arrayLength with arr` |
-| `sum` | Sum all elements | `the result of sum with arr` |
-| `mean` / `average` | Calculate average | `the result of mean with arr` |
-| `arrayMin` / `minOf` | Find minimum | `the result of arrayMin with arr` |
-| `arrayMax` / `maxOf` | Find maximum | `the result of arrayMax with arr` |
-| `append` / `push` | Add element | `the result of append with arr and 6` |
-| `reverse` | Reverse array | `the result of reverse with arr` |
+### Installing a package
+
+```bash
+englishc install https://github.com/user/eng-lish-somepackage
+```
+
+This clones the repo into `~/.eng-lish/packages/`. From then on, `use "somepackage".` resolves automatically.
+
+### Package resolution order
+
+1. `<same directory as source file>/<name>.eng`
+2. `./packages/<name>/<name>.eng` (project-local packages)
+3. `~/.eng-lish/packages/<name>/<name>.eng` (installed packages)
+4. `~/.eng-lish/packages/<name>/main.eng`
+
+### Bundled packages
+
+The repo ships three packages under `packages/`:
+
+**`numeric`** — inspired by `<numeric>` and `<cstdlib>`
+```
+use "numeric".
+
+output the result of factorial with 10.
+output the result of fibonacci with 15.
+output the result of gcd with 48 and 18.
+output the result of lcm with 4 and 6.
+output the result of isPrime with 17.
+output the result of sumUpTo with 100.
+```
+
+**`algorithm`** — inspired by `<algorithm>`
+```
+use "algorithm".
+
+let data be a list of standard number with value [3, 7, 1, 9, 4].
+
+output the result of clamp with 15 and 0 and 10.
+output the result of linearSearch with data and 9.
+output the result of countOccurrences with data and 3.
+output the result of maxIndex with data.
+```
+
+**`geometry`** — inspired by `<cmath>` + computational geometry
+```
+use "geometry".
+
+output the result of distance with 0.0 and 0.0 and 3.0 and 4.0.
+output the result of hypotenuse with 3.0 and 4.0.
+output the result of circleArea with 5.0.
+output the result of triangleArea with 6.0 and 4.0.
+output the result of degreesToRadians with 90.0.
+
+let p be a Point created with 0.0 and 0.0.
+output the result of asking p to distanceTo with 3.0 and 4.0.
+```
 
 ---
 
@@ -276,17 +387,17 @@ For each i from 1 to 100,
 End.
 ```
 
-### Guessing Game
+### Guessing game
 
 ```
 let secret be a standard number with value the result of randomBetween with 1 and 100.
 let guess be a standard number with value 0.
 
-output "I'm thinking of a number between 1 and 100.".
+output "I am thinking of a number between 1 and 100.".
 
 While guess is not equal to secret,
     output "Your guess:".
-    set guess to the result of readNumber.
+    Set guess to the result of readNumber.
 
     If guess is less than secret then
         output "Too low!".
@@ -294,33 +405,20 @@ While guess is not equal to secret,
         output "Too high!".
     otherwise
         output "Correct!".
+End.
 ```
 
 ### File I/O
 
 ```
-let success be a boolean with value the result of writeFile with "notes.txt" and "Remember to buy milk.".
+let ok be a boolean with value the result of writeFile with "notes.txt" and "Buy milk.".
 
-If success then
+If ok then
     output "Saved!".
-    let content be a text with value the result of readFile with "notes.txt".
-    output content.
+    let contents be a text with value the result of readFile with "notes.txt".
+    output contents.
 otherwise
-    output "Failed to save.".
-```
-
----
-
-## Error Messages
-
-eng-lish provides friendly, helpful error messages:
-
-```
-Line 5: I don't know what 'foo' is. Did you forget to create it with 'let foo be...'?
-
-Line 8: This expects a decimal, but you gave it a standard number. Try 5.0 instead of 5.
-
-Line 12: 'add' needs 2 values, but you gave it 3.
+    output "Could not save file.".
 ```
 
 ---
@@ -330,38 +428,32 @@ Line 12: 'add' needs 2 values, but you gave it 3.
 eng-lish compiles to native machine code via LLVM:
 
 ```
-┌──────────────┐     ┌────────┐     ┌──────────┐     ┌────────────┐
-│  .eng file   │ ──► │ Lexer  │ ──► │  Parser  │ ──► │  Semantic  │
-│              │     │        │     │          │     │  Analyzer  │
-└──────────────┘     └────────┘     └──────────┘     └────────────┘
-                                                            │
-                                                            ▼
-┌──────────────┐     ┌────────┐     ┌──────────┐     ┌────────────┐
-│  Executable  │ ◄── │  Clang │ ◄── │ LLVM IR  │ ◄── │  Codegen   │
-│              │     │        │     │          │     │            │
-└──────────────┘     └────────┘     └──────────┘     └────────────┘
+.eng source
+    │
+    ▼
+  Lexer  ──►  Parser  ──►  Semantic Analyzer
+                                  │
+                                  ▼
+ Executable  ◄──  Clang  ◄──  Codegen (LLVM IR)
 ```
 
 ---
 
 ## Contributing
 
-Contributions welcome! Areas of interest:
+Contributions welcome. Areas of interest:
 
-- More standard library functions
+- More packages
 - Better error messages
 - Language server (LSP) support
 - Syntax highlighting for editors
-- Documentation improvements
 
 ---
 
 ## License
 
- All Rights Reserved.
+All Rights Reserved.
 
 ---
 
-<p align="center">
-  <i>Code should be readable. eng-lish makes it so.</i>
-</p>
+*Code should be readable. eng-lish makes it so.*
