@@ -1,0 +1,34 @@
+To repeat with a text s and a standard number n returning a text:
+    let result be a text with value "".
+    For each i from 1 to n,
+        Set result to the result of combine with result and s.
+    End.
+    Give back result.
+End.
+
+To padLeft with a text s and a standard number width returning a text:
+    let result be a text with value s.
+    let current be a standard number with value the result of lengthOf with s.
+    While current is less than width,
+        Set result to the result of combine with " " and result.
+        Add 1 to current.
+    End.
+    Give back result.
+End.
+
+To padRight with a text s and a standard number width returning a text:
+    let result be a text with value s.
+    let current be a standard number with value the result of lengthOf with s.
+    While current is less than width,
+        Set result to the result of combine with result and " ".
+        Add 1 to current.
+    End.
+    Give back result.
+End.
+
+To isEmpty with a text s returning a boolean:
+    let len be a standard number with value the result of lengthOf with s.
+    If len is equal to 0 then
+        Give back true.
+    Give back false.
+End.
