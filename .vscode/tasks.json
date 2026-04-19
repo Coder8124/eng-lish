@@ -1,0 +1,64 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "eng-lish: Compile",
+      "type": "shell",
+      "command": "englishc",
+      "args": ["${file}"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": {
+        "owner": "eng-lish",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^Line (\\d+): (.*)$",
+          "line": 1,
+          "message": 2
+        }
+      }
+    },
+    {
+      "label": "eng-lish: Compile and Run",
+      "type": "shell",
+      "command": "englishc ${file} && ./${fileBasenameNoExtension}",
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "dependsOn": []
+    },
+    {
+      "label": "eng-lish: Print LLVM IR",
+      "type": "shell",
+      "command": "englishc",
+      "args": ["${file}", "--ir"],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      }
+    },
+    {
+      "label": "eng-lish: Build Compiler",
+      "type": "shell",
+      "command": "cargo build --release",
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      }
+    }
+  ]
+}
