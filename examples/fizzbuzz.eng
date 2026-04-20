@@ -1,0 +1,10 @@
+For each i from 1 to 100,
+    If remainder i by 15 is equal to 0 then
+        output "FizzBuzz".
+    otherwise if remainder i by 3 is equal to 0 then
+        output "Fizz".
+    otherwise if remainder i by 5 is equal to 0 then
+        output "Buzz".
+    otherwise
+        output i.
+End.
