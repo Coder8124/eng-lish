@@ -1,0 +1,8 @@
+use "numeric".
+
+output "Prime numbers up to 50:".
+
+For each n from 2 to 50,
+    If the result of isPrime with n then
+        output n.
+End.
