@@ -1,0 +1,7 @@
+use "numeric".
+
+output "First 15 Fibonacci numbers:".
+
+For each i from 0 to 14,
+    output the result of fibonacci with i.
+End.
