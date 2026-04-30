@@ -13,6 +13,7 @@ pub enum Type {
     Set(Box<Type>),       // unique collection
     Void,           // for functions that don't return
     Class(String),  // user-defined class type
+    Inferred,       // type to be inferred during semantic analysis
 }
 
 /// A function/method parameter
@@ -86,6 +87,7 @@ impl std::fmt::Display for Type {
             Type::Set(inner) => write!(f, "unique collection of {}", inner),
             Type::Void => write!(f, "nothing"),
             Type::Class(name) => write!(f, "{}", name),
+            Type::Inferred => write!(f, "unknown"),
         }
     }
 }
@@ -283,6 +285,7 @@ pub struct Program {
     pub statements: Vec<Statement>,
     /// Line numbers corresponding to each statement (parallel to statements vec)
     pub statement_lines: Vec<usize>,
+    pub beginner_mode: bool,
 }
 
 impl Program {
@@ -293,6 +296,7 @@ impl Program {
             functions: Vec::new(),
             statements: Vec::new(),
             statement_lines: Vec::new(),
+            beginner_mode: false,
         }
     }
 

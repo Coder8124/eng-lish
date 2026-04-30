@@ -164,6 +164,7 @@ impl Parser {
             functions,
             statements,
             statement_lines,
+            beginner_mode: false,
         })
     }
 

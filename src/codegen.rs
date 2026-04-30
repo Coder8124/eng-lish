@@ -4261,6 +4261,7 @@ impl<'ctx> CodeGen<'ctx> {
             Type::Tuple(_) => self.context.ptr_type(inkwell::AddressSpace::default()).into(),
             Type::Set(_) => self.context.ptr_type(inkwell::AddressSpace::default()).into(),
             Type::Void => self.context.i64_type().into(), // shouldn't be used as value type
+            Type::Inferred => unreachable!("Type::Inferred should be resolved before codegen"),
         }
     }
 
