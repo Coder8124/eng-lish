@@ -1279,6 +1279,12 @@ impl Parser {
                         arguments,
                     });
                 }
+                // Beginner mode: "name of arg" or "name of arg and arg"
+                if self.beginner_mode && self.check(&Token::Of) {
+                    self.advance(); // consume "of"
+                    let arguments = self.parse_argument_list()?;
+                    return Ok(Expr::FunctionCall { name, arguments });
+                }
                 Ok(Expr::Identifier(name))
             }
             // Keywords that can also be used as identifiers in expression context
@@ -1335,11 +1341,27 @@ impl Parser {
                     expr: Box::new(expr),
                 })
             }
-            _ => Err(ParseError::UnexpectedToken {
-                expected: "expression".to_string(),
-                found: self.current().cloned().unwrap_or(Token::Period),
-                line: self.current_line(),
-            }),
+            _ => {
+                // Beginner mode: keyword-named function calls like "add of 3 and 7"
+                if self.beginner_mode {
+                    if let Some(tok) = self.current().cloned() {
+                        if Self::is_word_token(&tok)
+                            && self.tokens.get(self.current + 1).map(|t| &t.token)
+                                == Some(&Token::Of)
+                        {
+                            let name = self.expect_identifier()?;
+                            self.advance(); // consume "of"
+                            let arguments = self.parse_argument_list()?;
+                            return Ok(Expr::FunctionCall { name, arguments });
+                        }
+                    }
+                }
+                Err(ParseError::UnexpectedToken {
+                    expected: "expression".to_string(),
+                    found: self.current().cloned().unwrap_or(Token::Period),
+                    line: self.current_line(),
+                })
+            }
         }
     }
 
@@ -1543,5 +1565,35 @@ mod tests {
         let f = &program.functions[0];
         assert_eq!(f.name, "sayHello");
         assert_eq!(f.parameters.len(), 0);
+    }
+
+    #[test]
+    fn test_beginner_call_single_arg() {
+        let src = "use beginner.\noutput double of 5.";
+        let program = Parser::parse(src).unwrap();
+        match &program.statements[0] {
+            Statement::Output(Expr::FunctionCall { name, arguments }) => {
+                assert_eq!(name, "double");
+                assert_eq!(arguments.len(), 1);
+                match &arguments[0] {
+                    Expr::IntLiteral(5) => {}
+                    other => panic!("expected IntLiteral(5), got {:?}", other),
+                }
+            }
+            other => panic!("expected Output(FunctionCall), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_beginner_call_two_args() {
+        let src = "use beginner.\noutput add of 3 and 7.";
+        let program = Parser::parse(src).unwrap();
+        match &program.statements[0] {
+            Statement::Output(Expr::FunctionCall { name, arguments }) => {
+                assert_eq!(name, "add");
+                assert_eq!(arguments.len(), 2);
+            }
+            other => panic!("expected Output(FunctionCall), got {:?}", other),
+        }
     }
 }
