@@ -176,17 +176,35 @@ impl Parser {
 
     /// Check if "To" starts a function definition vs compound assignment target
     /// Function def: "To <identifier> with ..." or "To <identifier> returning ..."
+    fn is_word_token(token: &Token) -> bool {
+        matches!(
+            token,
+            Token::Identifier(_)
+                | Token::Add
+                | Token::Subtract
+                | Token::Multiply
+                | Token::Divide
+                | Token::Result
+                | Token::Value
+                | Token::Kind
+                | Token::Property
+        )
+    }
+
     fn is_function_def(&self) -> bool {
-        // Look ahead: To <Identifier> (with|returning|:)
         if let Some(Token::To) = self.tokens.get(self.current).map(|t| &t.token) {
-            if let Some(Token::Identifier(_)) = self.tokens.get(self.current + 1).map(|t| &t.token)
-            {
-                // Check what follows the identifier
-                if let Some(next) = self.tokens.get(self.current + 2).map(|t| &t.token) {
-                    return matches!(
-                        next,
-                        Token::With | Token::Returning | Token::Colon
-                    );
+            if let Some(name_tok) = self.tokens.get(self.current + 1).map(|t| &t.token) {
+                let valid_name = matches!(name_tok, Token::Identifier(_))
+                    || (self.beginner_mode && Self::is_word_token(name_tok));
+                if valid_name {
+                    if let Some(next) = self.tokens.get(self.current + 2).map(|t| &t.token) {
+                        if matches!(next, Token::With | Token::Returning | Token::Colon) {
+                            return true;
+                        }
+                        if self.beginner_mode && Self::is_word_token(next) {
+                            return true;
+                        }
+                    }
                 }
             }
         }
@@ -479,16 +497,15 @@ impl Parser {
 
         let name = self.expect_identifier()?;
 
-        // Parse parameters: "with a type name and a type name ..."
         let parameters = if self.match_token(&Token::With) {
             self.parse_parameter_list()?
+        } else if self.beginner_mode && matches!(self.current(), Some(Token::Identifier(_))) {
+            self.parse_beginner_parameter_list()?
         } else {
             Vec::new()
         };
 
-        // Parse return type: "returning a type" or "returning nothing"
         let return_type = if self.match_token(&Token::Returning) {
-            // Optional article
             if self.check(&Token::A) || self.check(&Token::An) {
                 self.advance();
             }
@@ -497,6 +514,8 @@ impl Parser {
             } else {
                 self.parse_type()?
             }
+        } else if self.beginner_mode {
+            Type::Inferred
         } else {
             Type::Void
         };
@@ -541,6 +560,18 @@ impl Parser {
             }
         }
 
+        Ok(params)
+    }
+
+    fn parse_beginner_parameter_list(&mut self) -> Result<Vec<Parameter>, ParseError> {
+        let mut params = Vec::new();
+        loop {
+            let name = self.expect_identifier()?;
+            params.push(Parameter { name, param_type: Type::Inferred });
+            if !self.match_token(&Token::And) {
+                break;
+            }
+        }
         Ok(params)
     }
 
@@ -767,6 +798,22 @@ impl Parser {
             Some(Token::Property) => {
                 self.advance();
                 Ok("property".to_string())
+            }
+            Some(Token::Add) => {
+                self.advance();
+                Ok("add".to_string())
+            }
+            Some(Token::Subtract) => {
+                self.advance();
+                Ok("subtract".to_string())
+            }
+            Some(Token::Multiply) => {
+                self.advance();
+                Ok("multiply".to_string())
+            }
+            Some(Token::Divide) => {
+                self.advance();
+                Ok("divide".to_string())
             }
             other => Err(ParseError::UnexpectedToken {
                 expected: "identifier".to_string(),
@@ -1464,5 +1511,37 @@ mod tests {
     fn test_non_beginner_mode() {
         let program = Parser::parse("output \"hello\".").unwrap();
         assert!(!program.beginner_mode);
+    }
+
+    #[test]
+    fn test_beginner_func_def_one_param() {
+        let src = "use beginner.\nTo double x:\n    Give back x.\nEnd.";
+        let program = Parser::parse(src).unwrap();
+        assert_eq!(program.functions.len(), 1);
+        let f = &program.functions[0];
+        assert_eq!(f.name, "double");
+        assert_eq!(f.parameters.len(), 1);
+        assert_eq!(f.parameters[0].name, "x");
+        assert_eq!(f.parameters[0].param_type, Type::Inferred);
+        assert_eq!(f.return_type, Type::Inferred);
+    }
+
+    #[test]
+    fn test_beginner_func_def_two_params() {
+        let src = "use beginner.\nTo add x and y:\n    Give back x.\nEnd.";
+        let program = Parser::parse(src).unwrap();
+        let f = &program.functions[0];
+        assert_eq!(f.parameters.len(), 2);
+        assert_eq!(f.parameters[0].name, "x");
+        assert_eq!(f.parameters[1].name, "y");
+    }
+
+    #[test]
+    fn test_beginner_func_def_no_params() {
+        let src = "use beginner.\nTo sayHello:\n    output \"hi\".\nEnd.";
+        let program = Parser::parse(src).unwrap();
+        let f = &program.functions[0];
+        assert_eq!(f.name, "sayHello");
+        assert_eq!(f.parameters.len(), 0);
     }
 }
