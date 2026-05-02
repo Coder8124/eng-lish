@@ -101,11 +101,12 @@ impl std::error::Error for ParseError {}
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     current: usize,
+    beginner_mode: bool,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, current: 0 }
+        Self { tokens, current: 0, beginner_mode: false }
     }
 
     pub fn parse(source: &str) -> Result<Program, ParseError> {
@@ -127,6 +128,11 @@ impl Parser {
                 Some(Token::Use) => {
                     self.advance();
                     match self.current().cloned() {
+                        Some(Token::Identifier(ref name)) if name == "beginner" => {
+                            self.advance();
+                            self.expect(Token::Period)?;
+                            self.beginner_mode = true;
+                        }
                         Some(Token::StringLiteral(name)) => {
                             self.advance();
                             self.expect(Token::Period)?;
@@ -164,7 +170,7 @@ impl Parser {
             functions,
             statements,
             statement_lines,
-            beginner_mode: false,
+            beginner_mode: self.beginner_mode,
         })
     }
 
@@ -1446,5 +1452,17 @@ mod tests {
             }
             other => panic!("Expected Output with ListLiteral, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_beginner_mode_header() {
+        let program = Parser::parse("use beginner.\noutput \"hello\".").unwrap();
+        assert!(program.beginner_mode);
+    }
+
+    #[test]
+    fn test_non_beginner_mode() {
+        let program = Parser::parse("output \"hello\".").unwrap();
+        assert!(!program.beginner_mode);
     }
 }
