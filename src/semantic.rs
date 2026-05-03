@@ -60,6 +60,60 @@ pub enum SemanticError {
     ContinueOutsideLoop(usize),
 }
 
+impl SemanticError {
+    pub fn to_beginner_string(&self) -> String {
+        let (line_part, description, try_hint) = match self {
+            SemanticError::UndefinedVariable(name, line) => (
+                format!("Line {line}"),
+                format!("'{name}' hasn't been created yet."),
+                format!("Add `let {name} be a standard number with value ...` before this line."),
+            ),
+            SemanticError::TypeMismatch { expected, found, line } => (
+                format!("Line {line}"),
+                format!("You're using a {found} where a {expected} is expected."),
+                "Check that you're passing the right kind of value.".to_string(),
+            ),
+            SemanticError::ArgumentCountMismatch(name, expected, found, line) => (
+                format!("Line {line}"),
+                format!("'{name}' needs {expected} input(s), but you gave it {found}."),
+                format!("Check how many inputs '{name}' takes."),
+            ),
+            SemanticError::UndefinedFunction(name, line) => (
+                format!("Line {line}"),
+                format!("There's no function called '{name}'."),
+                format!("Check the spelling, or define it with `To {name} ...:`"),
+            ),
+            SemanticError::AlreadyDeclared(name, line) => (
+                format!("Line {line}"),
+                format!("'{name}' was already created."),
+                format!("Use `Set {name} to ...` to change its value, or pick a different name."),
+            ),
+            SemanticError::ReturnOutsideFunction(line) => (
+                format!("Line {line}"),
+                "'Give back' can only be used inside a function.".to_string(),
+                "Move this line inside a `To ... :` block.".to_string(),
+            ),
+            SemanticError::BreakOutsideLoop(line) => (
+                format!("Line {line}"),
+                "'stop' can only be used inside a loop.".to_string(),
+                "Move this line inside a `For each` or `While` block.".to_string(),
+            ),
+            SemanticError::ContinueOutsideLoop(line) => (
+                format!("Line {line}"),
+                "'skip' can only be used inside a loop.".to_string(),
+                "Move this line inside a `For each` or `While` block.".to_string(),
+            ),
+            other => {
+                let msg = format!("{other}");
+                return format!(
+                    "Oops! Something went wrong.\n  {msg}\n  Try: Check the line carefully."
+                );
+            }
+        };
+        format!("Oops! {line_part} has a problem.\n  {description}\n  Try: {try_hint}")
+    }
+}
+
 /// Function signature for the symbol table
 #[derive(Debug, Clone)]
 pub struct FunctionSignature {

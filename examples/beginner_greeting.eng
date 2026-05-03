@@ -1,0 +1,7 @@
+use beginner.
+
+To greet name:
+    output name.
+End.
+
+Call greet with "Alice".

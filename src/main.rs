@@ -109,6 +109,24 @@ fn cmd_install(args: &[String]) {
     }
 }
 
+fn format_beginner_parse_error(e: &str) -> String {
+    if let Some(rest) = e.strip_prefix("Line ") {
+        if let Some(colon_pos) = rest.find(':') {
+            let line_num = &rest[..colon_pos];
+            let message = rest[colon_pos + 1..].trim();
+            return format!(
+                "Oops! Line {line_num} has a problem.\n  {message}\n  Try: Check the line carefully."
+            );
+        }
+    }
+    if e.contains("ended too early") || e.contains("missing an 'End.'") {
+        return format!(
+            "Oops! Something isn't finished.\n  {e}\n  Try: Add `End.` after the last line of the block."
+        );
+    }
+    format!("Oops! Something went wrong.\n  {e}\n  Try: Check the line carefully.")
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -140,11 +158,21 @@ fn main() {
         .parent()
         .unwrap_or_else(|| Path::new("."));
 
+    let is_beginner = source
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.trim() == "use beginner.")
+        .unwrap_or(false);
+
     // Parse the source, resolving imports
     let mut program = match load_program_with_imports(&source, source_dir, &mut HashSet::new()) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            if is_beginner {
+                println!("{}", format_beginner_parse_error(&e));
+            } else {
+                eprintln!("Error: {}", e);
+            }
             std::process::exit(1);
         }
     };
@@ -152,9 +180,15 @@ fn main() {
     // Semantic analysis
     let mut analyzer = SemanticAnalyzer::new();
     if let Err(errors) = analyzer.analyze(&program) {
-        eprintln!("Semantic errors:");
-        for error in errors {
-            eprintln!("  {}", error);
+        if is_beginner {
+            for error in &errors {
+                println!("{}", error.to_beginner_string());
+            }
+        } else {
+            eprintln!("Semantic errors:");
+            for error in &errors {
+                eprintln!("  {}", error);
+            }
         }
         std::process::exit(1);
     }
