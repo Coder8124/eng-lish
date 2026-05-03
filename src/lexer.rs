@@ -249,6 +249,19 @@ pub enum Token {
     #[token("of", ignore(case))]
     Of,
 
+    // Symbol arithmetic operators
+    #[token("+")]
+    Plus,
+
+    #[token("-")]
+    Minus,
+
+    #[token("*")]
+    Star,
+
+    #[token("/")]
+    Slash,
+
     // Punctuation
     #[token(".")]
     Period,

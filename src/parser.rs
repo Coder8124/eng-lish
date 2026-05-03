@@ -54,6 +54,10 @@ fn friendly_token_name(token: &Token) -> String {
         Token::Kind => "'kind'".to_string(),
         Token::Property => "'property'".to_string(),
         Token::Ask => "'ask'".to_string(),
+        Token::Plus => "a '+' operator".to_string(),
+        Token::Minus => "a '-' operator".to_string(),
+        Token::Star => "a '*' operator".to_string(),
+        Token::Slash => "a '/' operator".to_string(),
         Token::IntLiteral(Some(n)) => format!("the number {}", n),
         Token::IntLiteral(None) => "a number".to_string(),
         Token::FloatLiteral(Some(f)) => format!("the decimal {}", f),
@@ -1135,7 +1139,7 @@ impl Parser {
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_term()?;
+        let mut left = self.parse_additive()?;
 
         // Handle "is greater than", "is less than", "is equal to", "is not equal to"
         while self.check(&Token::Is) {
@@ -1169,7 +1173,7 @@ impl Parser {
                 break;
             };
 
-            let right = self.parse_term()?;
+            let right = self.parse_additive()?;
             left = Expr::BinaryOp {
                 op,
                 left: Box::new(left),
@@ -1177,6 +1181,38 @@ impl Parser {
             };
         }
 
+        Ok(left)
+    }
+
+    fn parse_additive(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_multiplicative()?;
+        loop {
+            if self.match_token(&Token::Plus) {
+                let right = self.parse_multiplicative()?;
+                left = Expr::BinaryOp { op: BinaryOp::Add, left: Box::new(left), right: Box::new(right) };
+            } else if self.match_token(&Token::Minus) {
+                let right = self.parse_multiplicative()?;
+                left = Expr::BinaryOp { op: BinaryOp::Subtract, left: Box::new(left), right: Box::new(right) };
+            } else {
+                break;
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_multiplicative(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_term()?;
+        loop {
+            if self.match_token(&Token::Star) {
+                let right = self.parse_term()?;
+                left = Expr::BinaryOp { op: BinaryOp::Multiply, left: Box::new(left), right: Box::new(right) };
+            } else if self.match_token(&Token::Slash) {
+                let right = self.parse_term()?;
+                left = Expr::BinaryOp { op: BinaryOp::Divide, left: Box::new(left), right: Box::new(right) };
+            } else {
+                break;
+            }
+        }
         Ok(left)
     }
 
@@ -1597,6 +1633,15 @@ mod tests {
                 assert_eq!(arguments.len(), 2);
             }
             other => panic!("expected Output(FunctionCall), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_symbol_arithmetic() {
+        let program = Parser::parse("let result be a decimal with value 3.0 * 2.0 + 1.0.").unwrap();
+        match &program.statements[0] {
+            Statement::VariableDecl { value: Expr::BinaryOp { op: BinaryOp::Add, .. }, .. } => {}
+            other => panic!("Expected add at top level, got {:?}", other),
         }
     }
 }
