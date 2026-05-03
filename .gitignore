@@ -1,23 +1,20 @@
 /target
 
-# compiled eng-lish output
+# Compiled executables
+/arrays
+/beginner_greeting
+/beginner_squares
+/engine
+/fibonacci
+/fizzbuzz
+/functions
+/hello
+/loops
+/math
+/operators
+/strings
+/test_remainder
+/variables
+examples/binaries/*
+!examples/binaries/.gitkeep
 *.o
-test_remainder
-engine
-
-# compiled example binaries (no extension on macOS/Linux)
-examples/hello
-examples/loops
-examples/functions
-examples/arrays
-examples/strings
-examples/math
-examples/classes
-examples/io
-examples/files
-examples/operators
-examples/variables
-examples/greeting
-examples/ml
-examples/debug
-examples/packages_demo

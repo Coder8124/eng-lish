@@ -216,8 +216,15 @@ fn main() {
         .and_then(|s| s.to_str())
         .unwrap_or("output");
 
-    let obj_path = format!("{}.o", source_stem);
-    let exe_path = source_stem.to_string();
+    let (obj_path, exe_path) = if source_path.starts_with("examples/") || source_path.starts_with("examples\\") {
+        std::fs::create_dir_all("examples/binaries").ok();
+        (
+            format!("examples/binaries/{}.o", source_stem),
+            format!("examples/binaries/{}", source_stem),
+        )
+    } else {
+        (format!("{}.o", source_stem), source_stem.to_string())
+    };
 
     if let Err(e) = codegen.write_object_file(Path::new(&obj_path)) {
         eprintln!("Error writing object file: {}", e);
