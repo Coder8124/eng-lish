@@ -98,6 +98,8 @@ pub struct SemanticAnalyzer {
     current_class: Option<String>,
     /// Current function return type (for return statement checking)
     current_function_return_type: Option<Type>,
+    /// Current function name (for beginner inference)
+    current_function_name: Option<String>,
     /// Builtin function names that allow Int → Float auto-promotion
     builtin_int_promotable: HashSet<String>,
     /// Current line being analyzed (for error reporting)
@@ -106,6 +108,12 @@ pub struct SemanticAnalyzer {
     in_loop: bool,
     /// Collected errors
     pub errors: Vec<SemanticError>,
+    /// Names of beginner (Inferred-param) functions
+    beginner_functions: HashSet<String>,
+    /// Inferred param types per beginner function (index = param position)
+    inferred_param_types: HashMap<String, Vec<Option<Type>>>,
+    /// Inferred return type per beginner function
+    inferred_return_types: HashMap<String, Option<Type>>,
 }
 
 impl SemanticAnalyzer {
@@ -116,10 +124,14 @@ impl SemanticAnalyzer {
             classes: HashMap::new(),
             current_class: None,
             current_function_return_type: None,
+            current_function_name: None,
             builtin_int_promotable: HashSet::new(),
             current_line: 0,
             in_loop: false,
             errors: Vec::new(),
+            beginner_functions: HashSet::new(),
+            inferred_param_types: HashMap::new(),
+            inferred_return_types: HashMap::new(),
         };
         analyzer.register_builtin_functions();
         analyzer
@@ -229,6 +241,14 @@ impl SemanticAnalyzer {
         if self.functions.contains_key(&func.name) {
             return Err(SemanticError::FunctionAlreadyDefined(func.name.clone(), self.current_line));
         }
+        if func.parameters.iter().any(|p| p.param_type == Type::Inferred)
+            || func.return_type == Type::Inferred
+        {
+            self.beginner_functions.insert(func.name.clone());
+            self.inferred_param_types
+                .insert(func.name.clone(), vec![None; func.parameters.len()]);
+            self.inferred_return_types.insert(func.name.clone(), None);
+        }
         self.functions.insert(
             func.name.clone(),
             FunctionSignature {
@@ -245,6 +265,7 @@ impl SemanticAnalyzer {
     }
 
     fn analyze_function(&mut self, func: &FunctionDef) -> Result<(), SemanticError> {
+        self.current_function_name = Some(func.name.clone());
         self.push_scope();
         self.current_function_return_type = Some(func.return_type.clone());
 
@@ -558,7 +579,12 @@ impl SemanticAnalyzer {
                 if let Some(return_expr) = expr {
                     let return_type = self.analyze_expression(return_expr)?;
                     let expected = self.current_function_return_type.clone().unwrap();
-                    if expected != Type::Void {
+                    if expected == Type::Inferred {
+                        if let Some(fn_name) = self.find_current_beginner_function() {
+                            let entry = self.inferred_return_types.get_mut(&fn_name).unwrap();
+                            *entry = Some(return_type);
+                        }
+                    } else if expected != Type::Void {
                         self.check_type_compatible(&expected, &return_type)?;
                     }
                 }
@@ -758,10 +784,33 @@ impl SemanticAnalyzer {
                     ));
                 }
 
+                if self.beginner_functions.contains(name) {
+                    let mut arg_types = Vec::new();
+                    for arg in arguments.iter() {
+                        arg_types.push(self.analyze_expression(arg)?);
+                    }
+                    let inferred = self.inferred_param_types.get_mut(name).unwrap();
+                    for (i, arg_type) in arg_types.into_iter().enumerate() {
+                        match &inferred[i] {
+                            None => inferred[i] = Some(arg_type),
+                            Some(existing) if existing == &arg_type => {}
+                            Some(existing) => {
+                                let expected = existing.clone();
+                                return Err(SemanticError::TypeMismatch {
+                                    expected,
+                                    found: arg_type,
+                                    line: self.current_line,
+                                });
+                            }
+                        }
+                    }
+                    let ret = self.inferred_return_types.get(name).unwrap().clone();
+                    return Ok(ret.unwrap_or(Type::Void));
+                }
+
                 for (arg, (_param_name, param_type)) in arguments.iter().zip(sig.parameters.iter())
                 {
                     let arg_type = self.analyze_expression(arg)?;
-                    // Allow Int → Float auto-promotion for builtin math functions
                     if param_type == &Type::Float
                         && arg_type == Type::Int
                         && self.builtin_int_promotable.contains(name)
@@ -888,6 +937,9 @@ impl SemanticAnalyzer {
         left: &Type,
         right: &Type,
     ) -> Result<Type, SemanticError> {
+        if *left == Type::Inferred || *right == Type::Inferred {
+            return Ok(Type::Inferred);
+        }
         match op {
             BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
                 if (left == &Type::Int || left == &Type::Float)
@@ -954,14 +1006,45 @@ impl SemanticAnalyzer {
     }
 
     fn check_type_compatible(&self, expected: &Type, found: &Type) -> Result<(), SemanticError> {
-        if expected == found {
+        if expected == found || *expected == Type::Inferred || *found == Type::Inferred {
             Ok(())
         } else {
             Err(SemanticError::TypeMismatch {
                 expected: expected.clone(),
                 found: found.clone(),
-                                    line: self.current_line,
-                                    })
+                line: self.current_line,
+            })
+        }
+    }
+
+    fn find_current_beginner_function(&self) -> Option<String> {
+        let name = self.current_function_name.as_ref()?;
+        if self.beginner_functions.contains(name) {
+            Some(name.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn patch_program_types(&self, program: &mut Program) {
+        for func in &mut program.functions {
+            if !self.beginner_functions.contains(&func.name) {
+                continue;
+            }
+            if let Some(inferred_params) = self.inferred_param_types.get(&func.name) {
+                for (param, inferred) in func.parameters.iter_mut().zip(inferred_params.iter()) {
+                    if param.param_type == Type::Inferred {
+                        param.param_type = inferred.clone().unwrap_or(Type::Int);
+                    }
+                }
+            }
+            if func.return_type == Type::Inferred {
+                func.return_type = self
+                    .inferred_return_types
+                    .get(&func.name)
+                    .and_then(|t| t.clone())
+                    .unwrap_or(Type::Void);
+            }
         }
     }
 
@@ -1016,5 +1099,29 @@ mod tests {
     fn test_type_mismatch() {
         let result = analyze("let x be a standard number with value 3.14.");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_inferred_types_resolved_from_call_site() {
+        let src = "use beginner.\nTo double x:\n    Give back x.\nEnd.\noutput double of 5.";
+        let mut program = Parser::parse(src).unwrap();
+        let mut analyzer = SemanticAnalyzer::new();
+        assert!(analyzer.analyze(&program).is_ok());
+        analyzer.patch_program_types(&mut program);
+        let f = &program.functions[0];
+        assert_eq!(f.parameters[0].param_type, Type::Int);
+    }
+
+    #[test]
+    fn test_inferred_type_conflict_produces_error() {
+        let src = concat!(
+            "use beginner.\n",
+            "To greet x:\n    output x.\nEnd.\n",
+            "Call greet with 5.\n",
+            "Call greet with \"hello\".\n"
+        );
+        let program = Parser::parse(src).unwrap();
+        let mut analyzer = SemanticAnalyzer::new();
+        assert!(analyzer.analyze(&program).is_err());
     }
 }
