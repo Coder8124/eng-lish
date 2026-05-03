@@ -141,7 +141,7 @@ fn main() {
         .unwrap_or_else(|| Path::new("."));
 
     // Parse the source, resolving imports
-    let program = match load_program_with_imports(&source, source_dir, &mut HashSet::new()) {
+    let mut program = match load_program_with_imports(&source, source_dir, &mut HashSet::new()) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -158,6 +158,9 @@ fn main() {
         }
         std::process::exit(1);
     }
+
+    // Resolve beginner-mode Inferred types before codegen
+    analyzer.patch_program_types(&mut program);
 
     // Code generation
     let context = Context::create();

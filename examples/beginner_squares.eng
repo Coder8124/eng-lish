@@ -1,0 +1,10 @@
+use beginner.
+
+To square x:
+    let result be a standard number with value x.
+    Multiply x to result.
+    Give back result.
+End.
+
+output square of 3.
+output square of 5.
