@@ -402,7 +402,7 @@ impl Parser {
         })
     }
 
-    /// Parse: While condition, ...
+    /// Parse: While condition, ... End.
     fn parse_while(&mut self) -> Result<Statement, ParseError> {
         self.expect(Token::While)?;
 
@@ -411,7 +411,10 @@ impl Parser {
         // Optional comma
         self.match_token(&Token::Comma);
 
-        let body = self.parse_block()?;
+        let body = self.parse_body_until_end()?;
+
+        self.expect(Token::End)?;
+        self.expect(Token::Period)?;
 
         Ok(Statement::While { condition, body })
     }

@@ -1,7 +1,7 @@
 To factorial with a standard number n returning a standard number:
     let result be a standard number with value 1.
     For each i from 1 to n,
-        Multiply result by i.
+        Multiply i to result.
     End.
     Give back result.
 End.
@@ -11,31 +11,29 @@ To fibonacci with a standard number n returning a standard number:
         Give back 0.
     If n is equal to 1 then
         Give back 1.
-    let a be a standard number with value 0.
-    let b be a standard number with value 1.
-    let count be a standard number with value 2.
-    While count is less than n or count is equal to n,
-        let temp be a standard number with value b.
-        Add a to b.
-        Set a to temp.
-        Add 1 to count.
+    let prev be a standard number with value 0.
+    let curr be a standard number with value 1.
+    For each k from 2 to n,
+        let temp be a standard number with value curr.
+        Add prev to curr.
+        Set prev to temp.
     End.
-    Give back b.
+    Give back curr.
 End.
 
-To gcd with a standard number a and a standard number b returning a standard number:
-    While b is not equal to 0,
-        let temp be a standard number with value b.
-        Set b to remainder a by b.
-        Set a to temp.
+To gcd with a standard number lhs and a standard number rhs returning a standard number:
+    While rhs is not equal to 0,
+        let temp be a standard number with value rhs.
+        Set rhs to remainder lhs by rhs.
+        Set lhs to temp.
     End.
-    Give back a.
+    Give back lhs.
 End.
 
-To lcm with a standard number a and a standard number b returning a standard number:
-    let g be a standard number with value the result of gcd with a and b.
-    let product be a standard number with value a.
-    Multiply product by b.
+To lcm with a standard number lhs and a standard number rhs returning a standard number:
+    let g be a standard number with value the result of gcd with lhs and rhs.
+    let product be a standard number with value lhs.
+    Multiply rhs to product.
     let result be a standard number with value quotient product by g.
     Give back result.
 End.
