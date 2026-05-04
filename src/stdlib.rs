@@ -408,7 +408,105 @@ pub fn get_ml_builtins() -> Vec<BuiltinFunction> {
         BuiltinFunction {
             names: vec!["kMeans", "cluster"],
             parameters: vec![("data", Type::List(Box::new(Type::Float))), ("k", Type::Int)],
-            return_type: Type::List(Box::new(Type::Int)), // cluster assignments
+            return_type: Type::List(Box::new(Type::Int)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        // Neural / Tensor ops
+        BuiltinFunction {
+            names: vec!["vectorLength", "vecLen"],
+            parameters: vec![("vec", Type::List(Box::new(Type::Float)))],
+            return_type: Type::Int,
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["dotProduct", "dot"],
+            parameters: vec![
+                ("vecA", Type::List(Box::new(Type::Float))),
+                ("vecB", Type::List(Box::new(Type::Float))),
+            ],
+            return_type: Type::Float,
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["addVectors", "vecAdd"],
+            parameters: vec![
+                ("vecA", Type::List(Box::new(Type::Float))),
+                ("vecB", Type::List(Box::new(Type::Float))),
+            ],
+            return_type: Type::List(Box::new(Type::Float)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["subtractVectors", "vecSub"],
+            parameters: vec![
+                ("vecA", Type::List(Box::new(Type::Float))),
+                ("vecB", Type::List(Box::new(Type::Float))),
+            ],
+            return_type: Type::List(Box::new(Type::Float)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["scaleVector", "vecScale"],
+            parameters: vec![
+                ("vec", Type::List(Box::new(Type::Float))),
+                ("scalar", Type::Float),
+            ],
+            return_type: Type::List(Box::new(Type::Float)),
+            c_function: None,
+            accepts_int_as_float: true,
+        },
+        BuiltinFunction {
+            names: vec!["applySigmoid", "sigmoid"],
+            parameters: vec![("vec", Type::List(Box::new(Type::Float)))],
+            return_type: Type::List(Box::new(Type::Float)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["applyRelu", "relu"],
+            parameters: vec![("vec", Type::List(Box::new(Type::Float)))],
+            return_type: Type::List(Box::new(Type::Float)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["applySoftmax", "softmax"],
+            parameters: vec![("vec", Type::List(Box::new(Type::Float)))],
+            return_type: Type::List(Box::new(Type::Float)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["matVecMul"],
+            parameters: vec![
+                ("matrix", Type::List(Box::new(Type::Float))),
+                ("vec", Type::List(Box::new(Type::Float))),
+                ("rows", Type::Int),
+                ("cols", Type::Int),
+            ],
+            return_type: Type::List(Box::new(Type::Float)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["mseLoss"],
+            parameters: vec![
+                ("predictions", Type::List(Box::new(Type::Float))),
+                ("targets", Type::List(Box::new(Type::Float))),
+            ],
+            return_type: Type::Float,
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["randNormal"],
+            parameters: vec![("n", Type::Int)],
+            return_type: Type::List(Box::new(Type::Float)),
             c_function: None,
             accepts_int_as_float: false,
         },
