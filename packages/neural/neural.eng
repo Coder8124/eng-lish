@@ -1,0 +1,34 @@
+To linearLayer with a list of decimal weights and a list of decimal biases and a list of decimal inputs and a standard number outSize and a standard number inSize returning a list of decimal:
+    let raw be a list of decimal with value the result of matVecMul with weights and inputs and outSize and inSize.
+    Give back the result of addVectors with raw and biases.
+End.
+
+To initWeights with a standard number inSize and a standard number outSize returning a list of decimal:
+    let total be a standard number with value inSize * outSize.
+    Give back the result of randNormal with total.
+End.
+
+To initBiases with a standard number size returning a list of decimal:
+    Give back the result of zeros with size.
+End.
+
+To sigmoidActivation with a list of decimal vec returning a list of decimal:
+    Give back the result of applySigmoid with vec.
+End.
+
+To reluActivation with a list of decimal vec returning a list of decimal:
+    Give back the result of applyRelu with vec.
+End.
+
+To softmaxActivation with a list of decimal vec returning a list of decimal:
+    Give back the result of applySoftmax with vec.
+End.
+
+To mseError with a list of decimal predictions and a list of decimal targets returning a decimal:
+    Give back the result of mseLoss with predictions and targets.
+End.
+
+To updateWeights with a list of decimal weights and a list of decimal gradients and a decimal learningRate returning a list of decimal:
+    let scaled be a list of decimal with value the result of scaleVector with gradients and learningRate.
+    Give back the result of subtractVectors with weights and scaled.
+End.
