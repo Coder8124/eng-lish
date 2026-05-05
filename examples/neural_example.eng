@@ -1,0 +1,24 @@
+use "neural".
+
+output "Creating a 2-input, 4-hidden, 1-output network.".
+
+let w1 be a list of decimal with value the result of initWeights with 2 and 4.
+let b1 be a list of decimal with value the result of initBiases with 4.
+let w2 be a list of decimal with value the result of initWeights with 4 and 1.
+let b2 be a list of decimal with value the result of initBiases with 1.
+
+let input be a list of decimal with value [0.5, 0.8].
+let target be a list of decimal with value [1.0].
+
+let hidden be a list of decimal with value the result of linearLayer with w1 and b1 and input and 4 and 2.
+let hiddenOut be a list of decimal with value the result of sigmoidActivation with hidden.
+let finalOut be a list of decimal with value the result of linearLayer with w2 and b2 and hiddenOut and 1 and 4.
+let pred be a list of decimal with value the result of sigmoidActivation with finalOut.
+
+output "Prediction (before training):".
+let predVal be a decimal with value pred[0].
+output predVal.
+
+let loss be a decimal with value the result of mseError with pred and target.
+output "Loss:".
+output loss.
