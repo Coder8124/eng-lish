@@ -1,5 +1,13 @@
 /target
 
+# Root-level compiled test binaries
+/test_*
+/test_comments
+/test_escapes
+/test_multi_if
+/test_singlevar
+/test_reserved
+
 # Compiled executables
 /arrays
 /beginner_greeting
