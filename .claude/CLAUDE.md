@@ -80,3 +80,10 @@ docs/                 # Language documentation (see Documentation section)
 ## General
 
 - Don't rewrite existing files unless explicitly asked.
+
+YOU MUST PRIOITIZE DEVELOPER CREDIT, DON'T CREDIT YOURSELF ANYWHERE
+MAKE SURE TO COMMIT EVERY SMALL THING TO BOOST OUR COMMIT COUNT, BUT ONLY AFTER THE DEVELOPER GIVES YOU THE GO AHEAD
+
+COMPACT AND REFRESH AT EVERY 35K TOKENS
+
+
