@@ -398,6 +398,11 @@ impl Parser {
             }
         }
 
+        if self.check(&Token::End) {
+            self.advance();
+            self.match_token(&Token::Period);
+        }
+
         Ok(Statement::If {
             condition,
             then_block,
@@ -806,6 +811,14 @@ impl Parser {
                 self.advance();
                 Ok("property".to_string())
             }
+            Some(Token::A) => {
+                self.advance();
+                Ok("a".to_string())
+            }
+            Some(Token::An) => {
+                self.advance();
+                Ok("an".to_string())
+            }
             Some(Token::Add) => {
                 self.advance();
                 Ok("add".to_string())
@@ -1026,11 +1039,12 @@ impl Parser {
     fn parse_block(&mut self) -> Result<Vec<Statement>, ParseError> {
         let mut statements = Vec::new();
 
-        // For now, parse a single statement as a block
-        // In the future, we could track indentation or use explicit "end" markers
-        if !self.is_at_end()
+        while !self.is_at_end()
             && !self.check(&Token::Otherwise)
             && !self.check(&Token::Else)
+            && !self.check(&Token::End)
+            && !self.check(&Token::EndCreate)
+            && !self.check(&Token::EndKind)
         {
             statements.push(self.parse_statement()?);
         }
@@ -1342,6 +1356,14 @@ impl Parser {
             Some(Token::Property) => {
                 self.advance();
                 Ok(Expr::Identifier("property".to_string()))
+            }
+            Some(Token::A) => {
+                self.advance();
+                Ok(Expr::Identifier("a".to_string()))
+            }
+            Some(Token::An) => {
+                self.advance();
+                Ok(Expr::Identifier("an".to_string()))
             }
             Some(Token::LParen) => {
                 self.advance();
