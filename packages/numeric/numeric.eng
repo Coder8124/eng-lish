@@ -9,8 +9,10 @@ End.
 To fibonacci with a standard number n returning a standard number:
     If n is equal to 0 then
         Give back 0.
+    End.
     If n is equal to 1 then
         Give back 1.
+    End.
     let prev be a standard number with value 0.
     let curr be a standard number with value 1.
     For each k from 2 to n,
@@ -41,12 +43,14 @@ End.
 To isPrime with a standard number n returning a boolean:
     If n is less than 2 then
         Give back false.
-    let i be a standard number with value 2.
-    While i is less than n,
-        let rem be a standard number with value remainder n by i.
+    End.
+    let idx be a standard number with value 2.
+    While idx is less than n,
+        let rem be a standard number with value remainder n by idx.
         If rem is equal to 0 then
             Give back false.
-        Add 1 to i.
+        End.
+        Add 1 to idx.
     End.
     Give back true.
 End.
