@@ -7,6 +7,7 @@ output "Testing for loop with break:".
 For each i from 1 to 10,
     If i is greater than 3 then
         stop.
+    End.
     output i.
 End.
 
@@ -14,6 +15,7 @@ output "Testing for loop with continue:".
 For each i from 1 to 5,
     If i is equal to 3 then
         skip.
+    End.
     output i.
 End.
 
@@ -27,5 +29,6 @@ otherwise if score is greater than 70 then
     output "C".
 otherwise
     output "D".
+End.
 
 output "Done!".

@@ -7,4 +7,5 @@ For each i from 1 to 100,
         output "Buzz".
     otherwise
         output i.
+    End.
 End.
