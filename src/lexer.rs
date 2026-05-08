@@ -2,7 +2,8 @@ use logos::Logos;
 
 /// Token types for the eng-lish programming language
 #[derive(Logos, Debug, PartialEq, Clone)]
-#[logos(skip r"[ \t\n\r]+")]  // Skip whitespace
+#[logos(skip r"[ \t\n\r]+")]
+#[logos(skip r"Note:[^\n]*")]
 pub enum Token {
     // Keywords for variable declaration
     #[token("let", ignore(case))]
@@ -285,7 +286,27 @@ pub enum Token {
     RBracket,
 
     // Literals
-    #[regex(r#""[^"]*""#, |lex| lex.slice()[1..lex.slice().len()-1].to_string())]
+    #[regex(r#""(?:[^"\\]|\\.)*""#, |lex| {
+        let inner = &lex.slice()[1..lex.slice().len()-1];
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                match chars.next() {
+                    Some('n') => out.push('\n'),
+                    Some('t') => out.push('\t'),
+                    Some('r') => out.push('\r'),
+                    Some('"') => out.push('"'),
+                    Some('\\') => out.push('\\'),
+                    Some(c) => { out.push('\\'); out.push(c); }
+                    None => {}
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    })]
     StringLiteral(String),
 
     #[regex(r"[0-9]+\.[0-9]+", |lex| lex.slice().parse::<f64>().ok())]
