@@ -1,4 +1,4 @@
-# Claude Conventions for eng-lish
+# Codex Conventions for eng-lish
 
 ## What we're building
 
@@ -42,7 +42,7 @@ docs/                 # Language documentation (see Documentation section)
 
 ## Documentation requirements
 
-**Claude must create and maintain documentation** so the language is ready to ship at any time:
+**Codex must create and maintain documentation** so the language is ready to ship at any time:
 
 - Every new language feature needs a corresponding doc in `docs/language-reference/` as a Markdown file (e.g., `beginner-mode.md`, `functions.md`, `loops.md`).
 - Every new package needs a `README.md` inside its package directory describing its functions, types, and example usage.
@@ -59,7 +59,7 @@ docs/                 # Language documentation (see Documentation section)
 - Comparisons: `is at least` (>=) and `is at most` (<=) are available alongside `is greater than or equal to` / `is less than or equal to`.
 - Single-letter variable names (e.g., `a`, `b`) conflict with the article token — use descriptive names.
 - `Type::Inferred` must never reach codegen — always call `analyzer.patch_program_types(&mut program)` before code generation.
-- Never add `Co-Authored-By` or any Claude attribution to commit messages.
+- Never add `Co-Authored-By` or any Codex attribution to commit messages.
 
 ## Commits
 

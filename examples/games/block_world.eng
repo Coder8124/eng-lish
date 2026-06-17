@@ -1,0 +1,142 @@
+use "game".
+
+Note: ===================== MOD ZONE =====================
+Note: Change these numbers to change how the world looks.
+let MAP_SIZE be a standard number with value 8.
+let START_WOOD be a standard number with value 0.
+let START_STONE be a standard number with value 0.
+let TREE_CHANCE be a standard number with value 30.
+let STONE_CHANCE be a standard number with value 15.
+Note: ====================================================
+
+Note: Cell codes: 0 = air (.), 1 = dirt (D), 2 = tree (T), 3 = stone (S), 4 = water (~).
+
+To cellChar with a standard number code returning a text:
+    If code is equal to 2 then
+        Give back "T".
+    End.
+    If code is equal to 3 then
+        Give back "S".
+    End.
+    If code is equal to 4 then
+        Give back "~".
+    End.
+    If code is equal to 1 then
+        Give back "D".
+    End.
+    Give back ".".
+End.
+
+Note: STUDENT GAP: a plank recipe. Two wood make one plank.
+Note: Change the recipe and see how crafting changes!
+To craft with a standard number woodAmount returning a standard number:
+    Give back the quotient of woodAmount divided by 2.
+End.
+
+Note: ----- Build the world -----
+let cellCount be a standard number with value MAP_SIZE.
+Multiply cellCount by MAP_SIZE.
+let worldMap be a list of standard number with value the result of range with 0 and cellCount.
+
+let i be a standard number with value 0.
+While i is less than cellCount,
+    let rolled be a standard number with value the result of randomBetween with 1 and 100.
+    let stoneCutoff be a standard number with value TREE_CHANCE.
+    Add STONE_CHANCE to stoneCutoff.
+    If rolled is at most TREE_CHANCE then
+        Set worldMap[i] to 2.
+    otherwise if rolled is at most stoneCutoff then
+        Set worldMap[i] to 3.
+    otherwise
+        Set worldMap[i] to 1.
+    End.
+    Add 1 to i.
+End.
+
+Note: ----- Place the player in the middle on clear ground -----
+let playerRow be a standard number with value the quotient of MAP_SIZE divided by 2.
+let playerCol be a standard number with value the quotient of MAP_SIZE divided by 2.
+let startIdx be a standard number with value playerRow.
+Multiply startIdx by MAP_SIZE.
+Add playerCol to startIdx.
+Set worldMap[startIdx] to 0.
+
+let wood be a standard number with value START_WOOD.
+let stone be a standard number with value START_STONE.
+let running be a standard number with value 1.
+
+output "Welcome to BLOCK WORLD! You are the @ symbol.".
+output "Commands: north, south, east, west, mine, craft, inventory, quit.".
+
+While running is equal to 1,
+    Call printBorder with MAP_SIZE + 2.
+    let r be a standard number with value 0.
+    While r is less than MAP_SIZE,
+        let rowText be a text with value "".
+        let c be a standard number with value 0.
+        While c is less than MAP_SIZE,
+            If r is equal to playerRow and c is equal to playerCol then
+                Set rowText to the result of combine with rowText and "@".
+            otherwise
+                let cellIdx be a standard number with value r.
+                Multiply cellIdx by MAP_SIZE.
+                Add c to cellIdx.
+                Set rowText to the result of combine with rowText and the result of cellChar with worldMap[cellIdx].
+            End.
+            Add 1 to c.
+        End.
+        Call printRow with rowText.
+        Add 1 to r.
+    End.
+    Call printBorder with MAP_SIZE + 2.
+    output the result of combine with "Wood: " and the result of numberToText with wood.
+    output the result of combine with "Stone: " and the result of numberToText with stone.
+    output "Your move:".
+    let command be a text with value the result of readLine.
+
+    If command is equal to "quit" then
+        Set running to 0.
+    otherwise if command is equal to "north" then
+        If playerRow is greater than 0 then
+            Subtract 1 from playerRow.
+        End.
+    otherwise if command is equal to "south" then
+        If playerRow is less than MAP_SIZE - 1 then
+            Add 1 to playerRow.
+        End.
+    otherwise if command is equal to "west" then
+        If playerCol is greater than 0 then
+            Subtract 1 from playerCol.
+        End.
+    otherwise if command is equal to "east" then
+        If playerCol is less than MAP_SIZE - 1 then
+            Add 1 to playerCol.
+        End.
+    otherwise if command is equal to "mine" then
+        let here be a standard number with value playerRow.
+        Multiply here by MAP_SIZE.
+        Add playerCol to here.
+        let cell be a standard number with value worldMap[here].
+        If cell is equal to 2 then
+            Add 1 to wood.
+            Set worldMap[here] to 0.
+            output "You chopped a tree! +1 wood.".
+        otherwise if cell is equal to 3 then
+            Add 1 to stone.
+            Set worldMap[here] to 0.
+            output "You mined stone! +1 stone.".
+        otherwise
+            output "There is nothing to mine here.".
+        End.
+    otherwise if command is equal to "craft" then
+        let planks be a standard number with value the result of craft with wood.
+        output the result of combine with "You could craft this many planks: " and the result of numberToText with planks.
+    otherwise if command is equal to "inventory" then
+        output the result of combine with "Wood: " and the result of numberToText with wood.
+        output the result of combine with "Stone: " and the result of numberToText with stone.
+    otherwise
+        output "I don't know that command.".
+    End.
+End.
+
+output "Thanks for playing Block World!".

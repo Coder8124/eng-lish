@@ -6,15 +6,15 @@ Welcome to the eng-lish language reference. Each page covers one part of the lan
 
 | Feature | Summary |
 |---------|---------|
-| [Arithmetic](arithmetic.md) | `+`, `-`, `*`, `/` operators and compound assignment (`Add X to Y.`) |
-| [Conditionals](conditionals.md) | `If condition then` / `otherwise` / `End.` — multi-statement branches |
+| [Arithmetic](arithmetic.md) | `+`, `-`, `*`, `/`, compound assignment (`Multiply total by 2.`), and `the remainder/quotient of X divided by Y` |
+| [Conditionals](conditionals.md) | `If condition then` / `otherwise` / `End.`, comparisons like `is at least` / `is at most` |
 | [Comments](comments.md) | `Note: ...` — line comments ignored by the compiler |
 | Variables | `let name be a type with value ...` — store and reuse values |
 | Functions | `To funcName with param returning type:` — write reusable code |
 | Loops | `For each i from 0 to n,` and `While condition,` — repeat actions |
 | Classes | `Define a kind called Name:` — group data and behavior together |
-| Arrays | `list of standard number`, `list of decimal` — store lists of values |
-| Strings | `"text"` with escape sequences `\"`, `\n`, `\t`, `\\` |
+| [Lists](lists.md) | `[1, 2, 3]`, reading `scores[0]`, and changing items with `Set scores[0] to ...` |
+| Strings | `"text"` with escape sequences `\"`, `\n`, `\t`, `\\`; compare with `is equal to` |
 | File I/O | `readFile` / `writeFile` — read and write files |
 
 ## Beginner Mode
@@ -32,6 +32,7 @@ Packages add extra functions to your program. Use them with `use "packageName".`
 | `geometry` | Shapes and distances: `circleArea`, `distance`, `pythagorean` |
 | `strings` | String utilities: `length`, `toUpperCase`, `contains` |
 | `math` | Math constants and functions: `pi`, `sqrt`, `abs`, `power` |
+| [`game`](game-package.md) | Terminal game helpers: `printBorder`, `printRow`, `centerText` |
 | [`neural`](neural-networks.md) | Neural networks: `initWeights`, `linearLayer`, `sigmoidActivation`, `mseError` |
 
 ## Examples

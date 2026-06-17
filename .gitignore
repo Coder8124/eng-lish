@@ -12,6 +12,7 @@
 /arrays
 /beginner_greeting
 /beginner_squares
+/classes
 /engine
 /fibonacci
 /fizzbuzz
@@ -26,3 +27,6 @@
 examples/binaries/*
 !examples/binaries/.gitkeep
 *.o
+
+# Generated chart output
+*.html

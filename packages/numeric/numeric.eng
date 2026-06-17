@@ -1,7 +1,7 @@
 To factorial with a standard number n returning a standard number:
     let result be a standard number with value 1.
     For each i from 1 to n,
-        Multiply i to result.
+        Multiply result by i.
     End.
     Give back result.
 End.
@@ -26,7 +26,7 @@ End.
 To gcd with a standard number lhs and a standard number rhs returning a standard number:
     While rhs is not equal to 0,
         let temp be a standard number with value rhs.
-        Set rhs to remainder lhs by rhs.
+        Set rhs to the remainder of lhs divided by rhs.
         Set lhs to temp.
     End.
     Give back lhs.
@@ -35,8 +35,8 @@ End.
 To lcm with a standard number lhs and a standard number rhs returning a standard number:
     let g be a standard number with value the result of gcd with lhs and rhs.
     let product be a standard number with value lhs.
-    Multiply rhs to product.
-    let result be a standard number with value quotient product by g.
+    Multiply product by rhs.
+    let result be a standard number with value the quotient of product divided by g.
     Give back result.
 End.
 
@@ -46,7 +46,7 @@ To isPrime with a standard number n returning a boolean:
     End.
     let idx be a standard number with value 2.
     While idx is less than n,
-        let rem be a standard number with value remainder n by idx.
+        let rem be a standard number with value the remainder of n divided by idx.
         If rem is equal to 0 then
             Give back false.
         End.

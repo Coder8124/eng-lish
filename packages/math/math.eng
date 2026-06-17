@@ -16,7 +16,7 @@ To absoluteInt with a standard number n returning a standard number:
 End.
 
 To isEven with a standard number n returning a boolean:
-    let r be a standard number with value remainder n by 2.
+    let r be a standard number with value the remainder of n divided by 2.
     If r is equal to 0 then
         Give back true.
     End.
@@ -24,7 +24,7 @@ To isEven with a standard number n returning a boolean:
 End.
 
 To isOdd with a standard number n returning a boolean:
-    let r be a standard number with value remainder n by 2.
+    let r be a standard number with value the remainder of n divided by 2.
     If r is not equal to 0 then
         Give back true.
     End.
@@ -37,11 +37,11 @@ To digitCount with a standard number n returning a standard number:
     End.
     let m be a standard number with value n.
     If m is less than 0 then
-        Multiply negative 1 to m.
+        Multiply m by negative 1.
     End.
     let count be a standard number with value 0.
     While m is greater than 0,
-        Set m to quotient m by 10.
+        Set m to the quotient of m divided by 10.
         Add 1 to count.
     End.
     Give back count.
@@ -50,7 +50,7 @@ End.
 To intPow with a standard number base and a standard number exp returning a standard number:
     let result be a standard number with value 1.
     For each i from 1 to exp,
-        Multiply base to result.
+        Multiply result by base.
     End.
     Give back result.
 End.

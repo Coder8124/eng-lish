@@ -75,14 +75,14 @@ let x be a standard number with value 10.
 
 Add 5 to x.        Note: x = x + 5
 Subtract 2 from x. Note: x = x - 2
-Multiply 3 to x.   Note: x = x * 3
-Divide 4 from x.   Note: x = x / 4
+Multiply x by 3.   Note: x = x * 3
+Divide x by 4.     Note: x = x / 4
 ```
 
 **Remainder and quotient:**
 ```
-output remainder x by 3.
-output quotient x by 3.
+output the remainder of x divided by 3.
+output the quotient of x divided by 3.
 ```
 
 ### Comments
@@ -147,7 +147,7 @@ End.
 **Break and continue:**
 ```
 For each i from 1 to 100,
-    If remainder i by 2 is equal to 0 then
+    If the remainder of i divided by 2 is equal to 0 then
         skip.
     End.
     If i is greater than 9 then
@@ -387,11 +387,11 @@ Clones the repo into `~/.eng-lish/packages/`. After that, `use "somepackage".` r
 
 ```
 For each i from 1 to 100,
-    If remainder i by 15 is equal to 0 then
+    If the remainder of i divided by 15 is equal to 0 then
         output "FizzBuzz".
-    otherwise if remainder i by 3 is equal to 0 then
+    otherwise if the remainder of i divided by 3 is equal to 0 then
         output "Fizz".
-    otherwise if remainder i by 5 is equal to 0 then
+    otherwise if the remainder of i divided by 5 is equal to 0 then
         output "Buzz".
     otherwise
         output i.

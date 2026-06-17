@@ -75,6 +75,9 @@ pub enum Token {
     #[token("quotient", ignore(case))]
     Quotient,
 
+    #[token("divided", ignore(case))]
+    Divided,
+
     #[token("to", ignore(case))]
     To,
 
@@ -105,6 +108,12 @@ pub enum Token {
 
     #[token("than", ignore(case))]
     Than,
+
+    #[token("at least", ignore(case))]
+    AtLeast,
+
+    #[token("at most", ignore(case))]
+    AtMost,
 
     // Control flow
     #[token("if", ignore(case))]
@@ -324,22 +333,13 @@ pub enum Token {
 #[derive(Debug, Clone)]
 pub struct SpannedToken {
     pub token: Token,
-    pub span: std::ops::Range<usize>,
     pub line: usize,
 }
 
 /// Lexer for the eng-lish language
-pub struct Lexer<'source> {
-    inner: logos::Lexer<'source, Token>,
-}
+pub struct Lexer;
 
-impl<'source> Lexer<'source> {
-    pub fn new(source: &'source str) -> Self {
-        Self {
-            inner: Token::lexer(source),
-        }
-    }
-
+impl Lexer {
     /// Tokenize the entire source and return a vector of spanned tokens
     pub fn tokenize(source: &str) -> Result<Vec<SpannedToken>, LexError> {
         let mut lexer = Token::lexer(source);
@@ -360,13 +360,11 @@ impl<'source> Lexer<'source> {
                 Ok(token) => {
                     tokens.push(SpannedToken {
                         token,
-                        span,
                         line: current_line,
                     });
                 }
                 Err(_) => {
                     return Err(LexError {
-                        span,
                         line: current_line,
                         message: format!("Unexpected token: '{}'", lexer.slice()),
                     });
@@ -376,10 +374,10 @@ impl<'source> Lexer<'source> {
 
         // Post-process: fix logos priority issue where "the" gets lexed as Identifier
         for token in &mut tokens {
-            if let Token::Identifier(ref s) = token.token {
-                if s.eq_ignore_ascii_case("the") {
-                    token.token = Token::The;
-                }
+            if let Token::Identifier(ref s) = token.token
+                && s.eq_ignore_ascii_case("the")
+            {
+                token.token = Token::The;
             }
         }
 
@@ -387,30 +385,8 @@ impl<'source> Lexer<'source> {
     }
 }
 
-impl Iterator for Lexer<'_> {
-    type Item = Result<SpannedToken, LexError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|result| {
-            match result {
-                Ok(token) => Ok(SpannedToken {
-                    token,
-                    span: self.inner.span(),
-                    line: 0, // Line tracking only available via tokenize()
-                }),
-                Err(_) => Err(LexError {
-                    span: self.inner.span(),
-                    line: 0,
-                    message: format!("Unexpected token: '{}'", self.inner.slice()),
-                }),
-            }
-        })
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct LexError {
-    pub span: std::ops::Range<usize>,
     pub line: usize,
     pub message: String,
 }
@@ -439,7 +415,9 @@ mod tests {
         assert!(matches!(tokens[4].token, Token::TypeFloat));
         assert!(matches!(tokens[5].token, Token::With));
         assert!(matches!(tokens[6].token, Token::Value));
-        assert!(matches!(&tokens[7].token, Token::FloatLiteral(Some(v)) if (*v - 3.14).abs() < 0.001));
+        assert!(
+            matches!(&tokens[7].token, Token::FloatLiteral(Some(v)) if (*v - 3.14).abs() < 0.001)
+        );
         assert!(matches!(tokens[8].token, Token::Period));
     }
 
@@ -470,14 +448,25 @@ mod tests {
         let source = "[1, 2, 3]";
         let tokens = Lexer::tokenize(source).unwrap();
 
-        println!("Tokens: {:?}", tokens.iter().map(|t| &t.token).collect::<Vec<_>>());
+        println!(
+            "Tokens: {:?}",
+            tokens.iter().map(|t| &t.token).collect::<Vec<_>>()
+        );
 
-        assert!(matches!(tokens[0].token, Token::LBracket), "Expected LBracket, got {:?}", tokens[0].token);
+        assert!(
+            matches!(tokens[0].token, Token::LBracket),
+            "Expected LBracket, got {:?}",
+            tokens[0].token
+        );
         assert!(matches!(&tokens[1].token, Token::IntLiteral(Some(1))));
         assert!(matches!(tokens[2].token, Token::Comma));
         assert!(matches!(&tokens[3].token, Token::IntLiteral(Some(2))));
         assert!(matches!(tokens[4].token, Token::Comma));
         assert!(matches!(&tokens[5].token, Token::IntLiteral(Some(3))));
-        assert!(matches!(tokens[6].token, Token::RBracket), "Expected RBracket, got {:?}", tokens[6].token);
+        assert!(
+            matches!(tokens[6].token, Token::RBracket),
+            "Expected RBracket, got {:?}",
+            tokens[6].token
+        );
     }
 }

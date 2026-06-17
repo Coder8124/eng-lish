@@ -1,19 +1,19 @@
-/// Abstract Syntax Tree definitions for the eng-lish language
+//! Abstract Syntax Tree definitions for the eng-lish language
 
 /// The type system for eng-lish
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
-    Text,           // str in Python
-    Int,            // standard number
-    Float,          // decimal
-    Bool,           // boolean
-    List(Box<Type>),      // list of <type>
-    Dict(Box<Type>, Box<Type>),  // lock and key list
-    Tuple(Vec<Type>),     // fixed list
-    Set(Box<Type>),       // unique collection
-    Void,           // for functions that don't return
-    Class(String),  // user-defined class type
-    Inferred,       // type to be inferred during semantic analysis
+    Text,                       // str in Python
+    Int,                        // standard number
+    Float,                      // decimal
+    Bool,                       // boolean
+    List(Box<Type>),            // list of <type>
+    Dict(Box<Type>, Box<Type>), // lock and key list
+    Tuple(Vec<Type>),           // fixed list
+    Set(Box<Type>),             // unique collection
+    Void,                       // for functions that don't return
+    Class(String),              // user-defined class type
+    Inferred,                   // type to be inferred during semantic analysis
 }
 
 /// A function/method parameter
@@ -59,7 +59,7 @@ pub struct Method {
 #[derive(Debug, Clone)]
 pub struct ClassDef {
     pub name: String,
-    pub parent: Option<String>,  // For inheritance
+    pub parent: Option<String>, // For inheritance
     pub properties: Vec<Property>,
     pub constructor: Option<Constructor>,
     pub methods: Vec<Method>,
@@ -99,14 +99,14 @@ pub enum BinaryOp {
     Subtract,
     Multiply,
     Divide,
-    Remainder,   // %
-    Quotient,    // //
-    Equal,       // same / is equal to
-    NotEqual,    // is not equal to
-    Greater,     // is greater than
-    Less,        // is less than
-    GreaterEq,   // is greater than or equal to
-    LessEq,      // is less than or equal to
+    Remainder, // %
+    Quotient,  // //
+    Equal,     // same / is equal to
+    NotEqual,  // is not equal to
+    Greater,   // is greater than
+    Less,      // is less than
+    GreaterEq, // is greater than or equal to
+    LessEq,    // is less than or equal to
     And,
     Or,
 }
@@ -114,8 +114,8 @@ pub enum BinaryOp {
 /// Unary operators
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOp {
-    Negate,  // negative
-    Not,     // not
+    Negate, // negative
+    Not,    // not
 }
 
 /// Chart types for plotting
@@ -153,16 +153,10 @@ pub enum Expr {
     },
 
     /// Unary operation: not x
-    UnaryOp {
-        op: UnaryOp,
-        operand: Box<Expr>,
-    },
+    UnaryOp { op: UnaryOp, operand: Box<Expr> },
 
     /// Type conversion (signifier): standard number of text
-    TypeConversion {
-        target_type: Type,
-        expr: Box<Expr>,
-    },
+    TypeConversion { target_type: Type, expr: Box<Expr> },
 
     /// List literal: list of 1, 2, 3
     ListLiteral(Vec<Expr>),
@@ -174,10 +168,7 @@ pub enum Expr {
     },
 
     /// Function call: Call add with 5 and 10, or result of add with 5 and 10
-    FunctionCall {
-        name: String,
-        arguments: Vec<Expr>,
-    },
+    FunctionCall { name: String, arguments: Vec<Expr> },
 
     /// Object instantiation: Person created with "Alice" and 30
     NewObject {
@@ -193,14 +184,12 @@ pub enum Expr {
     },
 
     /// Property access: the name of alice
-    PropertyAccess {
-        object: Box<Expr>,
-        property: String,
-    },
+    PropertyAccess { object: Box<Expr>, property: String },
 }
 
 /// Statements in eng-lish
 #[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
 pub enum Statement {
     /// Variable declaration: let x be a decimal with value 3.14.
     VariableDecl {
@@ -210,10 +199,7 @@ pub enum Statement {
     },
 
     /// Assignment: Set x to 5.
-    Assignment {
-        name: String,
-        value: Expr,
-    },
+    Assignment { name: String, value: Expr },
 
     /// Compound assignment: Add 5 to x.
     CompoundAssignment {
@@ -263,6 +249,13 @@ pub enum Statement {
     PropertyAssignment {
         object: String,
         property: String,
+        value: Expr,
+    },
+
+    /// Indexed assignment: Set map[i] to 0.
+    IndexAssignment {
+        collection: String,
+        index: Expr,
         value: Expr,
     },
 
