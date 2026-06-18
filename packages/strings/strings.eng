@@ -30,5 +30,6 @@ To isEmpty with a text s returning a boolean:
     let len be a standard number with value the result of lengthOf with s.
     If len is equal to 0 then
         Give back true.
+    End.
     Give back false.
 End.

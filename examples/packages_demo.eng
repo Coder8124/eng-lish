@@ -60,6 +60,6 @@ output the result of triangleArea with 6.0 and 4.0.
 output "90 degrees in radians =".
 output the result of degreesToRadians with 90.0.
 
-let p be a Point created with 0.0 and 0.0.
+let originPoint be a Point created with 0.0 and 0.0.
 output "Point (0,0) to (3,4) =".
-output the result of asking p to distanceTo with 3.0 and 4.0.
+output the result of asking originPoint to distanceTo with 3.0 and 4.0.

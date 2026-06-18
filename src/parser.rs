@@ -73,9 +73,16 @@ impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ParseError::UnexpectedEof => {
-                write!(f, "Your program ended too early. You might be missing an 'End.' to close a block.")
+                write!(
+                    f,
+                    "Your program ended too early. You might be missing an 'End.' to close a block."
+                )
             }
-            ParseError::UnexpectedToken { expected, found, line } => {
+            ParseError::UnexpectedToken {
+                expected,
+                found,
+                line,
+            } => {
                 let found_name = friendly_token_name(found);
                 // Make the expected description friendlier
                 let expected_friendly = match expected.as_str() {
@@ -85,13 +92,25 @@ impl std::fmt::Display for ParseError {
                     "called" => "'called'",
                     _ => expected,
                 };
-                write!(f, "Line {}: Expected {}, but found {}.", line, expected_friendly, found_name)
+                write!(
+                    f,
+                    "Line {}: Expected {}, but found {}.",
+                    line, expected_friendly, found_name
+                )
             }
             ParseError::InvalidStatement(line, msg) => {
-                write!(f, "Line {}: I don't understand this sentence. {}", line, msg)
+                write!(
+                    f,
+                    "Line {}: I don't understand this sentence. {}",
+                    line, msg
+                )
             }
             ParseError::ExpectedType(line) => {
-                write!(f, "Line {}: I need to know what type this is (like 'standard number', 'decimal', or 'text').", line)
+                write!(
+                    f,
+                    "Line {}: I need to know what type this is (like 'standard number', 'decimal', or 'text').",
+                    line
+                )
             }
             ParseError::LexerError(line, msg) => {
                 write!(f, "Line {}: {}", line, msg)
@@ -110,7 +129,11 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, current: 0, beginner_mode: false }
+        Self {
+            tokens,
+            current: 0,
+            beginner_mode: false,
+        }
     }
 
     pub fn parse(source: &str) -> Result<Program, ParseError> {
@@ -196,19 +219,17 @@ impl Parser {
     }
 
     fn is_function_def(&self) -> bool {
-        if let Some(Token::To) = self.tokens.get(self.current).map(|t| &t.token) {
-            if let Some(name_tok) = self.tokens.get(self.current + 1).map(|t| &t.token) {
-                let valid_name = matches!(name_tok, Token::Identifier(_))
-                    || (self.beginner_mode && Self::is_word_token(name_tok));
-                if valid_name {
-                    if let Some(next) = self.tokens.get(self.current + 2).map(|t| &t.token) {
-                        if matches!(next, Token::With | Token::Returning | Token::Colon) {
-                            return true;
-                        }
-                        if self.beginner_mode && Self::is_word_token(next) {
-                            return true;
-                        }
-                    }
+        if let Some(Token::To) = self.tokens.get(self.current).map(|t| &t.token)
+            && let Some(name_tok) = self.tokens.get(self.current + 1).map(|t| &t.token)
+        {
+            let valid_name = matches!(name_tok, Token::Identifier(_))
+                || (self.beginner_mode && Self::is_word_token(name_tok));
+            if valid_name && let Some(next) = self.tokens.get(self.current + 2).map(|t| &t.token) {
+                if matches!(next, Token::With | Token::Returning | Token::Colon) {
+                    return true;
+                }
+                if self.beginner_mode && Self::is_word_token(next) {
+                    return true;
                 }
             }
         }
@@ -221,18 +242,8 @@ impl Parser {
         self.tokens.get(self.current).map(|t| &t.token)
     }
 
-    fn current_position(&self) -> usize {
-        self.tokens
-            .get(self.current)
-            .map(|t| t.span.start)
-            .unwrap_or(0)
-    }
-
     fn current_line(&self) -> usize {
-        self.tokens
-            .get(self.current)
-            .map(|t| t.line)
-            .unwrap_or(1)
+        self.tokens.get(self.current).map(|t| t.line).unwrap_or(1)
     }
 
     fn advance(&mut self) -> Option<&Token> {
@@ -253,6 +264,22 @@ impl Parser {
     fn match_token(&mut self, token: &Token) -> bool {
         if self.check(token) {
             self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Consume a trailing "or equal to" (the "to" is optional) used to turn
+    /// "greater than"/"less than" into their "or equal" variants. Returns
+    /// whether the phrase was present.
+    fn match_or_equal_to(&mut self) -> bool {
+        if self.check(&Token::Or)
+            && self.tokens.get(self.current + 1).map(|t| &t.token) == Some(&Token::Equal)
+        {
+            self.advance(); // "or"
+            self.advance(); // "equal"
+            self.match_token(&Token::To); // optional "to"
             true
         } else {
             false
@@ -317,26 +344,26 @@ impl Parser {
         let var_type = self.parse_type()?;
 
         // Check if this is object instantiation: "Person created with ..."
-        if let Type::Class(_) = &var_type {
-            if self.match_token(&Token::Created) {
-                self.expect(Token::With)?;
-                let arguments = self.parse_argument_list()?;
-                self.expect(Token::Period)?;
+        if let Type::Class(_) = &var_type
+            && self.match_token(&Token::Created)
+        {
+            self.expect(Token::With)?;
+            let arguments = self.parse_argument_list()?;
+            self.expect(Token::Period)?;
 
-                let class_name = match &var_type {
-                    Type::Class(n) => n.clone(),
-                    _ => unreachable!(),
-                };
+            let class_name = match &var_type {
+                Type::Class(n) => n.clone(),
+                _ => unreachable!(),
+            };
 
-                return Ok(Statement::VariableDecl {
-                    name,
-                    var_type,
-                    value: Expr::NewObject {
-                        class_name,
-                        arguments,
-                    },
-                });
-            }
+            return Ok(Statement::VariableDecl {
+                name,
+                var_type,
+                value: Expr::NewObject {
+                    class_name,
+                    arguments,
+                },
+            });
         }
 
         self.expect(Token::With)?;
@@ -396,6 +423,11 @@ impl Parser {
                 else_block = Some(self.parse_block()?);
                 break;
             }
+        }
+
+        if self.check(&Token::End) {
+            self.advance();
+            self.match_token(&Token::Period);
         }
 
         Ok(Statement::If {
@@ -467,13 +499,39 @@ impl Parser {
         Ok(Statement::Continue)
     }
 
-    /// Parse compound assignment: Add 5 to x.
+    /// Parse compound assignment. Both natural-English and legacy forms are
+    /// accepted, disambiguated by the preposition that follows the first value:
+    ///   Add 5 to total.        -> total = total + 5
+    ///   Subtract 5 from total. -> total = total - 5
+    ///   Multiply total by 2.   -> total = total * 2   (natural, target first)
+    ///   Divide total by 2.     -> total = total / 2   (natural, target first)
+    ///   Multiply 2 to total.   -> total = total * 2   (legacy, target last)
+    ///   Divide 2 from total.   -> total = total / 2   (legacy, target last)
     fn parse_compound_assignment(&mut self, op: BinaryOp) -> Result<Statement, ParseError> {
         self.advance(); // Skip the operation keyword (Add/Subtract/etc.)
 
-        let value = self.parse_expression()?;
+        let first = self.parse_expression()?;
 
-        // Expect "to" or "from" depending on operation
+        // Natural "Multiply/Divide <target> by <amount>" form: the target comes
+        // first and the amount follows "by".
+        if matches!(op, BinaryOp::Multiply | BinaryOp::Divide) && self.check(&Token::By) {
+            self.advance(); // consume "by"
+            let name = match first {
+                Expr::Identifier(name) => name,
+                _ => {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "a variable name before 'by'".to_string(),
+                        found: Token::By,
+                        line: self.current_line(),
+                    });
+                }
+            };
+            let value = self.parse_expression()?;
+            self.expect(Token::Period)?;
+            return Ok(Statement::CompoundAssignment { name, op, value });
+        }
+
+        // Legacy form: the amount comes first, the target follows the preposition.
         match op {
             BinaryOp::Add | BinaryOp::Multiply => self.expect(Token::To)?,
             BinaryOp::Subtract | BinaryOp::Divide => self.expect(Token::From)?,
@@ -484,7 +542,11 @@ impl Parser {
 
         self.expect(Token::Period)?;
 
-        Ok(Statement::CompoundAssignment { name, op, value })
+        Ok(Statement::CompoundAssignment {
+            name,
+            op,
+            value: first,
+        })
     }
 
     /// Parse assignment or expression statement
@@ -557,10 +619,7 @@ impl Parser {
 
             let name = self.expect_identifier()?;
 
-            params.push(Parameter {
-                name,
-                param_type,
-            });
+            params.push(Parameter { name, param_type });
 
             if !self.match_token(&Token::And) {
                 break;
@@ -574,7 +633,10 @@ impl Parser {
         let mut params = Vec::new();
         loop {
             let name = self.expect_identifier()?;
-            params.push(Parameter { name, param_type: Type::Inferred });
+            params.push(Parameter {
+                name,
+                param_type: Type::Inferred,
+            });
             if !self.match_token(&Token::And) {
                 break;
             }
@@ -660,6 +722,21 @@ impl Parser {
 
         // Regular assignment: "Set name to value."
         let name = self.expect_identifier()?;
+
+        // Indexed assignment: "Set name[index] to value."
+        if self.match_token(&Token::LBracket) {
+            let index = self.parse_expression()?;
+            self.expect(Token::RBracket)?;
+            self.expect(Token::To)?;
+            let value = self.parse_expression()?;
+            self.expect(Token::Period)?;
+            return Ok(Statement::IndexAssignment {
+                collection: name,
+                index,
+                value,
+            });
+        }
+
         self.expect(Token::To)?;
         let value = self.parse_expression()?;
         self.expect(Token::Period)?;
@@ -806,6 +883,14 @@ impl Parser {
                 self.advance();
                 Ok("property".to_string())
             }
+            Some(Token::A) => {
+                self.advance();
+                Ok("a".to_string())
+            }
+            Some(Token::An) => {
+                self.advance();
+                Ok("an".to_string())
+            }
             Some(Token::Add) => {
                 self.advance();
                 Ok("add".to_string())
@@ -924,10 +1009,10 @@ impl Parser {
 
     /// Check if current position is a constructor: "To create ..."
     fn is_constructor(&self) -> bool {
-        if let Some(Token::To) = self.tokens.get(self.current).map(|t| &t.token) {
-            if let Some(Token::Create) = self.tokens.get(self.current + 1).map(|t| &t.token) {
-                return true;
-            }
+        if let Some(Token::To) = self.tokens.get(self.current).map(|t| &t.token)
+            && let Some(Token::Create) = self.tokens.get(self.current + 1).map(|t| &t.token)
+        {
+            return true;
         }
         false
     }
@@ -946,10 +1031,7 @@ impl Parser {
         let prop_type = self.parse_type()?;
         self.expect(Token::Period)?;
 
-        Ok(Property {
-            name,
-            prop_type,
-        })
+        Ok(Property { name, prop_type })
     }
 
     /// Parse: To create with a type param and a type param:
@@ -1026,11 +1108,12 @@ impl Parser {
     fn parse_block(&mut self) -> Result<Vec<Statement>, ParseError> {
         let mut statements = Vec::new();
 
-        // For now, parse a single statement as a block
-        // In the future, we could track indentation or use explicit "end" markers
-        if !self.is_at_end()
+        while !self.is_at_end()
             && !self.check(&Token::Otherwise)
             && !self.check(&Token::Else)
+            && !self.check(&Token::End)
+            && !self.check(&Token::EndCreate)
+            && !self.check(&Token::EndKind)
         {
             statements.push(self.parse_statement()?);
         }
@@ -1147,19 +1230,37 @@ impl Parser {
 
             let negated = self.match_token(&Token::Not);
 
-            let op = if self.match_token(&Token::Greater) {
-                self.expect(Token::Than)?;
+            let op = if self.match_token(&Token::AtLeast) {
+                // "is at least" -> >= ; "is not at least" -> <
                 if negated {
-                    BinaryOp::LessEq
+                    BinaryOp::Less
                 } else {
+                    BinaryOp::GreaterEq
+                }
+            } else if self.match_token(&Token::AtMost) {
+                // "is at most" -> <= ; "is not at most" -> >
+                if negated {
                     BinaryOp::Greater
+                } else {
+                    BinaryOp::LessEq
+                }
+            } else if self.match_token(&Token::Greater) {
+                self.expect(Token::Than)?;
+                let or_equal = self.match_or_equal_to();
+                match (negated, or_equal) {
+                    (false, false) => BinaryOp::Greater,
+                    (false, true) => BinaryOp::GreaterEq,
+                    (true, false) => BinaryOp::LessEq,
+                    (true, true) => BinaryOp::Less,
                 }
             } else if self.match_token(&Token::Less) {
                 self.expect(Token::Than)?;
-                if negated {
-                    BinaryOp::GreaterEq
-                } else {
-                    BinaryOp::Less
+                let or_equal = self.match_or_equal_to();
+                match (negated, or_equal) {
+                    (false, false) => BinaryOp::Less,
+                    (false, true) => BinaryOp::LessEq,
+                    (true, false) => BinaryOp::GreaterEq,
+                    (true, true) => BinaryOp::Greater,
                 }
             } else if self.match_token(&Token::Equal) || self.match_token(&Token::Same) {
                 // "is equal to" or "is same as"
@@ -1189,10 +1290,18 @@ impl Parser {
         loop {
             if self.match_token(&Token::Plus) {
                 let right = self.parse_multiplicative()?;
-                left = Expr::BinaryOp { op: BinaryOp::Add, left: Box::new(left), right: Box::new(right) };
+                left = Expr::BinaryOp {
+                    op: BinaryOp::Add,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                };
             } else if self.match_token(&Token::Minus) {
                 let right = self.parse_multiplicative()?;
-                left = Expr::BinaryOp { op: BinaryOp::Subtract, left: Box::new(left), right: Box::new(right) };
+                left = Expr::BinaryOp {
+                    op: BinaryOp::Subtract,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                };
             } else {
                 break;
             }
@@ -1205,10 +1314,18 @@ impl Parser {
         loop {
             if self.match_token(&Token::Star) {
                 let right = self.parse_term()?;
-                left = Expr::BinaryOp { op: BinaryOp::Multiply, left: Box::new(left), right: Box::new(right) };
+                left = Expr::BinaryOp {
+                    op: BinaryOp::Multiply,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                };
             } else if self.match_token(&Token::Slash) {
                 let right = self.parse_term()?;
-                left = Expr::BinaryOp { op: BinaryOp::Divide, left: Box::new(left), right: Box::new(right) };
+                left = Expr::BinaryOp {
+                    op: BinaryOp::Divide,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                };
             } else {
                 break;
             }
@@ -1343,6 +1460,14 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Identifier("property".to_string()))
             }
+            Some(Token::A) => {
+                self.advance();
+                Ok(Expr::Identifier("a".to_string()))
+            }
+            Some(Token::An) => {
+                self.advance();
+                Ok(Expr::Identifier("an".to_string()))
+            }
             Some(Token::LParen) => {
                 self.advance();
                 let expr = self.parse_expression()?;
@@ -1382,18 +1507,15 @@ impl Parser {
             }
             _ => {
                 // Beginner mode: keyword-named function calls like "add of 3 and 7"
-                if self.beginner_mode {
-                    if let Some(tok) = self.current().cloned() {
-                        if Self::is_word_token(&tok)
-                            && self.tokens.get(self.current + 1).map(|t| &t.token)
-                                == Some(&Token::Of)
-                        {
-                            let name = self.expect_identifier()?;
-                            self.advance(); // consume "of"
-                            let arguments = self.parse_argument_list()?;
-                            return Ok(Expr::FunctionCall { name, arguments });
-                        }
-                    }
+                if self.beginner_mode
+                    && let Some(tok) = self.current().cloned()
+                    && Self::is_word_token(&tok)
+                    && self.tokens.get(self.current + 1).map(|t| &t.token) == Some(&Token::Of)
+                {
+                    let name = self.expect_identifier()?;
+                    self.advance(); // consume "of"
+                    let arguments = self.parse_argument_list()?;
+                    return Ok(Expr::FunctionCall { name, arguments });
                 }
                 Err(ParseError::UnexpectedToken {
                     expected: "expression".to_string(),
@@ -1409,6 +1531,14 @@ impl Parser {
     /// - "the result of asking obj to method"
     /// - "the prop of obj"
     fn parse_the_expression(&mut self) -> Result<Expr, ParseError> {
+        // "the remainder of X divided by Y" / "the quotient of X divided by Y"
+        if self.match_token(&Token::Remainder) {
+            return self.parse_the_division(BinaryOp::Remainder);
+        }
+        if self.match_token(&Token::Quotient) {
+            return self.parse_the_division(BinaryOp::Quotient);
+        }
+
         if self.match_token(&Token::Result) {
             self.expect(Token::Of)?;
 
@@ -1452,6 +1582,21 @@ impl Parser {
                 property,
             })
         }
+    }
+
+    /// Parse the tail of "the remainder/quotient of X divided by Y".
+    /// The word "divided" is optional, so "the remainder of X by Y" also works.
+    fn parse_the_division(&mut self, op: BinaryOp) -> Result<Expr, ParseError> {
+        self.expect(Token::Of)?;
+        let left = self.parse_unary()?;
+        self.match_token(&Token::Divided); // optional "divided"
+        self.expect(Token::By)?;
+        let right = self.parse_unary()?;
+        Ok(Expr::BinaryOp {
+            op,
+            left: Box::new(left),
+            right: Box::new(right),
+        })
     }
 }
 
@@ -1640,8 +1785,140 @@ mod tests {
     fn test_symbol_arithmetic() {
         let program = Parser::parse("let result be a decimal with value 3.0 * 2.0 + 1.0.").unwrap();
         match &program.statements[0] {
-            Statement::VariableDecl { value: Expr::BinaryOp { op: BinaryOp::Add, .. }, .. } => {}
+            Statement::VariableDecl {
+                value: Expr::BinaryOp {
+                    op: BinaryOp::Add, ..
+                },
+                ..
+            } => {}
             other => panic!("Expected add at top level, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_multiply_by_natural() {
+        // "Multiply total by 2" -> total = total * 2
+        let program = Parser::parse("Multiply total by 2.").unwrap();
+        match &program.statements[0] {
+            Statement::CompoundAssignment { name, op, value } => {
+                assert_eq!(name, "total");
+                assert_eq!(*op, BinaryOp::Multiply);
+                assert!(matches!(value, Expr::IntLiteral(2)));
+            }
+            other => panic!("Expected CompoundAssignment, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_divide_by_natural() {
+        // "Divide total by 2" -> total = total / 2
+        let program = Parser::parse("Divide total by 2.").unwrap();
+        match &program.statements[0] {
+            Statement::CompoundAssignment { name, op, value } => {
+                assert_eq!(name, "total");
+                assert_eq!(*op, BinaryOp::Divide);
+                assert!(matches!(value, Expr::IntLiteral(2)));
+            }
+            other => panic!("Expected CompoundAssignment, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_multiply_to_legacy() {
+        // Legacy "Multiply 2 to total" -> total = total * 2
+        let program = Parser::parse("Multiply 2 to total.").unwrap();
+        match &program.statements[0] {
+            Statement::CompoundAssignment { name, op, value } => {
+                assert_eq!(name, "total");
+                assert_eq!(*op, BinaryOp::Multiply);
+                assert!(matches!(value, Expr::IntLiteral(2)));
+            }
+            other => panic!("Expected CompoundAssignment, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_remainder_of_divided_by() {
+        let program = Parser::parse(
+            "let r be a standard number with value the remainder of 17 divided by 5.",
+        )
+        .unwrap();
+        match &program.statements[0] {
+            Statement::VariableDecl {
+                value: Expr::BinaryOp { op, .. },
+                ..
+            } => assert_eq!(*op, BinaryOp::Remainder),
+            other => panic!("Expected remainder BinaryOp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_quotient_of_divided_by() {
+        let program = Parser::parse(
+            "let q be a standard number with value the quotient of 17 divided by 5.",
+        )
+        .unwrap();
+        match &program.statements[0] {
+            Statement::VariableDecl {
+                value: Expr::BinaryOp { op, .. },
+                ..
+            } => assert_eq!(*op, BinaryOp::Quotient),
+            other => panic!("Expected quotient BinaryOp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_at_least_at_most() {
+        let program = Parser::parse("output score is at least 90.").unwrap();
+        match &program.statements[0] {
+            Statement::Output(Expr::BinaryOp { op, .. }) => {
+                assert_eq!(*op, BinaryOp::GreaterEq)
+            }
+            other => panic!("Expected GreaterEq, got {:?}", other),
+        }
+
+        let program = Parser::parse("output score is at most 90.").unwrap();
+        match &program.statements[0] {
+            Statement::Output(Expr::BinaryOp { op, .. }) => {
+                assert_eq!(*op, BinaryOp::LessEq)
+            }
+            other => panic!("Expected LessEq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_index_assignment() {
+        let program = Parser::parse("Set grid[2] to 7.").unwrap();
+        match &program.statements[0] {
+            Statement::IndexAssignment {
+                collection,
+                index,
+                value,
+            } => {
+                assert_eq!(collection, "grid");
+                assert!(matches!(index, Expr::IntLiteral(2)));
+                assert!(matches!(value, Expr::IntLiteral(7)));
+            }
+            other => panic!("Expected IndexAssignment, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_greater_than_or_equal_to() {
+        let program = Parser::parse("output score is greater than or equal to 90.").unwrap();
+        match &program.statements[0] {
+            Statement::Output(Expr::BinaryOp { op, .. }) => {
+                assert_eq!(*op, BinaryOp::GreaterEq)
+            }
+            other => panic!("Expected GreaterEq, got {:?}", other),
+        }
+
+        let program = Parser::parse("output score is less than or equal to 90.").unwrap();
+        match &program.statements[0] {
+            Statement::Output(Expr::BinaryOp { op, .. }) => {
+                assert_eq!(*op, BinaryOp::LessEq)
+            }
+            other => panic!("Expected LessEq, got {:?}", other),
         }
     }
 }

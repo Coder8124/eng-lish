@@ -25,7 +25,9 @@ fn resolve_package_path(name: &str, source_dir: &Path) -> Option<PathBuf> {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let candidates = [
         source_dir.join(format!("{}.eng", name)),
-        cwd.join("packages").join(name).join(format!("{}.eng", name)),
+        cwd.join("packages")
+            .join(name)
+            .join(format!("{}.eng", name)),
         cwd.join("packages").join(name).join("main.eng"),
         packages_dir().join(name).join(format!("{}.eng", name)),
         packages_dir().join(name).join("main.eng"),
@@ -73,7 +75,7 @@ fn cmd_install(args: &[String]) {
     let pkg_name = url
         .trim_end_matches('/')
         .split('/')
-        .last()
+        .next_back()
         .unwrap_or("package")
         .trim_end_matches(".git")
         .to_string();
@@ -84,11 +86,11 @@ fn cmd_install(args: &[String]) {
         std::process::exit(0);
     }
 
-    if let Some(parent) = dest.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            eprintln!("Could not create packages directory: {}", e);
-            std::process::exit(1);
-        }
+    if let Some(parent) = dest.parent()
+        && let Err(e) = fs::create_dir_all(parent)
+    {
+        eprintln!("Could not create packages directory: {}", e);
+        std::process::exit(1);
     }
 
     println!("Installing '{}' from {}...", pkg_name, url);
@@ -110,14 +112,14 @@ fn cmd_install(args: &[String]) {
 }
 
 fn format_beginner_parse_error(e: &str) -> String {
-    if let Some(rest) = e.strip_prefix("Line ") {
-        if let Some(colon_pos) = rest.find(':') {
-            let line_num = &rest[..colon_pos];
-            let message = rest[colon_pos + 1..].trim();
-            return format!(
-                "Oops! Line {line_num} has a problem.\n  {message}\n  Try: Check the line carefully."
-            );
-        }
+    if let Some(rest) = e.strip_prefix("Line ")
+        && let Some(colon_pos) = rest.find(':')
+    {
+        let line_num = &rest[..colon_pos];
+        let message = rest[colon_pos + 1..].trim();
+        return format!(
+            "Oops! Line {line_num} has a problem.\n  {message}\n  Try: Check the line carefully."
+        );
     }
     if e.contains("ended too early") || e.contains("missing an 'End.'") {
         return format!(
@@ -176,6 +178,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let is_beginner = program.beginner_mode;
 
     // Semantic analysis
     let mut analyzer = SemanticAnalyzer::new();
@@ -216,15 +219,16 @@ fn main() {
         .and_then(|s| s.to_str())
         .unwrap_or("output");
 
-    let (obj_path, exe_path) = if source_path.starts_with("examples/") || source_path.starts_with("examples\\") {
-        std::fs::create_dir_all("examples/binaries").ok();
-        (
-            format!("examples/binaries/{}.o", source_stem),
-            format!("examples/binaries/{}", source_stem),
-        )
-    } else {
-        (format!("{}.o", source_stem), source_stem.to_string())
-    };
+    let (obj_path, exe_path) =
+        if source_path.starts_with("examples/") || source_path.starts_with("examples\\") {
+            std::fs::create_dir_all("examples/binaries").ok();
+            (
+                format!("examples/binaries/{}.o", source_stem),
+                format!("examples/binaries/{}", source_stem),
+            )
+        } else {
+            (format!("{}.o", source_stem), source_stem.to_string())
+        };
 
     if let Err(e) = codegen.write_object_file(Path::new(&obj_path)) {
         eprintln!("Error writing object file: {}", e);

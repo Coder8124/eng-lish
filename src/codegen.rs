@@ -1,5 +1,6 @@
 use crate::ast::*;
 use crate::stdlib;
+use inkwell::OptimizationLevel;
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -9,7 +10,6 @@ use inkwell::targets::{
 };
 use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
-use inkwell::OptimizationLevel;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -320,12 +320,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             let null_ptr = unsafe {
                 self.builder
-                    .build_gep(
-                        i8_type,
-                        buf,
-                        &[i64_type.const_int(1, false)],
-                        "null_ptr",
-                    )
+                    .build_gep(i8_type, buf, &[i64_type.const_int(1, false)], "null_ptr")
                     .map_err(|e| e.to_string())?
             };
             self.builder
@@ -366,9 +361,7 @@ impl<'ctx> CodeGen<'ctx> {
         // --- contains(haystack: ptr, needle: ptr) -> i1 ---
         {
             let fn_type = bool_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-            let func = self
-                .module
-                .add_function("englang_contains", fn_type, None);
+            let func = self.module.add_function("englang_contains", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             self.builder.position_at_end(entry);
 
@@ -388,12 +381,7 @@ impl<'ctx> CodeGen<'ctx> {
             let null_ptr = ptr_type.const_null();
             let is_found = self
                 .builder
-                .build_int_compare(
-                    inkwell::IntPredicate::NE,
-                    result_ptr,
-                    null_ptr,
-                    "is_found",
-                )
+                .build_int_compare(inkwell::IntPredicate::NE, result_ptr, null_ptr, "is_found")
                 .map_err(|e| e.to_string())?;
 
             self.builder
@@ -404,6 +392,134 @@ impl<'ctx> CodeGen<'ctx> {
                 self.builtin_functions.insert(name.to_string(), func);
                 self.builtin_return_types
                     .insert(name.to_string(), Type::Bool);
+            }
+        }
+
+        // --- repeatText(s: ptr, count: i64) -> ptr ---
+        // Returns a fresh string with `s` concatenated `count` times.
+        {
+            let fn_type = ptr_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
+            let func = self.module.add_function("englang_repeatText", fn_type, None);
+            let entry = self.context.append_basic_block(func, "entry");
+            let loop_cond = self.context.append_basic_block(func, "loop_cond");
+            let loop_body = self.context.append_basic_block(func, "loop_body");
+            let loop_end = self.context.append_basic_block(func, "loop_end");
+
+            self.builder.position_at_end(entry);
+            let s = func.get_nth_param(0).unwrap().into_pointer_value();
+            let count = func.get_nth_param(1).unwrap().into_int_value();
+
+            let len = self
+                .builder
+                .build_call(c_strlen, &[s.into()], "len")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let len = match len {
+                ValueKind::Basic(v) => v.into_int_value(),
+                _ => return Err("strlen returned void".to_string()),
+            };
+
+            let total = self
+                .builder
+                .build_int_mul(len, count, "total")
+                .map_err(|e| e.to_string())?;
+            let total_plus1 = self
+                .builder
+                .build_int_add(total, i64_type.const_int(1, false), "total_plus1")
+                .map_err(|e| e.to_string())?;
+
+            let buf = self
+                .builder
+                .build_call(malloc, &[total_plus1.into()], "buf")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let buf = match buf {
+                ValueKind::Basic(v) => v.into_pointer_value(),
+                _ => return Err("malloc returned void".to_string()),
+            };
+            // Null-terminate the empty buffer so strcat starts cleanly.
+            self.builder
+                .build_store(buf, i8_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "i")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_zero())
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(loop_cond);
+            let i_val = self
+                .builder
+                .build_load(i64_type, counter, "i_val")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i_val, count, "cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, loop_body, loop_end)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(loop_body);
+            self.builder
+                .build_call(c_strcat, &[buf.into(), s.into()], "cat")
+                .map_err(|e| e.to_string())?;
+            let i_next = self
+                .builder
+                .build_int_add(i_val, i64_type.const_int(1, false), "i_next")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i_next)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(loop_end);
+            self.builder
+                .build_return(Some(&buf))
+                .map_err(|e| e.to_string())?;
+
+            self.builtin_functions
+                .insert("repeatText".to_string(), func);
+            self.builtin_return_types
+                .insert("repeatText".to_string(), Type::Text);
+        }
+
+        // --- clearScreen() -> void ---
+        // Prints the ANSI escape that clears the screen and homes the cursor.
+        {
+            let printf = self.printf_fn.ok_or("printf not declared")?;
+            let void_type = self.context.void_type();
+            let fn_type = void_type.fn_type(&[], false);
+            let func = self
+                .module
+                .add_function("englang_clearScreen", fn_type, None);
+            let entry = self.context.append_basic_block(func, "entry");
+            self.builder.position_at_end(entry);
+
+            let seq = self
+                .builder
+                .build_global_string_ptr("\x1b[2J\x1b[H", "clear_seq")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_call(printf, &[seq.as_pointer_value().into()], "clr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(None)
+                .map_err(|e| e.to_string())?;
+
+            for name in &["clearScreen", "clear"] {
+                self.builtin_functions.insert(name.to_string(), func);
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::Void);
             }
         }
 
@@ -505,9 +621,7 @@ impl<'ctx> CodeGen<'ctx> {
                     "p_nodot",
                 )
                 .map_err(|e| e.to_string())?;
-            self.builder
-                .build_return(None)
-                .map_err(|e| e.to_string())?;
+            self.builder.build_return(None).map_err(|e| e.to_string())?;
 
             // has_dot: printf("%s\n", buf)
             self.builder.position_at_end(has_dot_bb);
@@ -522,9 +636,7 @@ impl<'ctx> CodeGen<'ctx> {
                     "p_hasdot",
                 )
                 .map_err(|e| e.to_string())?;
-            self.builder
-                .build_return(None)
-                .map_err(|e| e.to_string())?;
+            self.builder.build_return(None).map_err(|e| e.to_string())?;
         }
 
         // Declare additional C functions for I/O and utilities
@@ -571,7 +683,8 @@ impl<'ctx> CodeGen<'ctx> {
         let fprintf_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], true);
         let _c_fprintf = self.module.add_function("fprintf", fprintf_type, None);
 
-        let fseek_type = i32_type.fn_type(&[ptr_type.into(), i64_type.into(), i32_type.into()], false);
+        let fseek_type =
+            i32_type.fn_type(&[ptr_type.into(), i64_type.into(), i32_type.into()], false);
         let c_fseek = self.module.add_function("fseek", fseek_type, None);
 
         let ftell_type = i64_type.fn_type(&[ptr_type.into()], false);
@@ -580,10 +693,26 @@ impl<'ctx> CodeGen<'ctx> {
         let rewind_type = self.context.void_type().fn_type(&[ptr_type.into()], false);
         let c_rewind = self.module.add_function("rewind", rewind_type, None);
 
-        let fread_type = i64_type.fn_type(&[ptr_type.into(), i64_type.into(), i64_type.into(), ptr_type.into()], false);
+        let fread_type = i64_type.fn_type(
+            &[
+                ptr_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
         let c_fread = self.module.add_function("fread", fread_type, None);
 
-        let fwrite_type = i64_type.fn_type(&[ptr_type.into(), i64_type.into(), i64_type.into(), ptr_type.into()], false);
+        let fwrite_type = i64_type.fn_type(
+            &[
+                ptr_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
         let c_fwrite = self.module.add_function("fwrite", fwrite_type, None);
 
         // --- readLine() -> ptr ---
@@ -644,7 +773,9 @@ impl<'ctx> CodeGen<'ctx> {
         // --- readNumber() -> i64 ---
         {
             let fn_type = i64_type.fn_type(&[], false);
-            let func = self.module.add_function("englang_readNumber", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_readNumber", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             self.builder.position_at_end(entry);
 
@@ -688,7 +819,9 @@ impl<'ctx> CodeGen<'ctx> {
         // --- textToNumber(s: ptr) -> i64 ---
         {
             let fn_type = i64_type.fn_type(&[ptr_type.into()], false);
-            let func = self.module.add_function("englang_textToNumber", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_textToNumber", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             self.builder.position_at_end(entry);
 
@@ -716,7 +849,9 @@ impl<'ctx> CodeGen<'ctx> {
         // --- textToDecimal(s: ptr) -> f64 ---
         {
             let fn_type = f64_type.fn_type(&[ptr_type.into()], false);
-            let func = self.module.add_function("englang_textToDecimal", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_textToDecimal", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             self.builder.position_at_end(entry);
 
@@ -744,7 +879,9 @@ impl<'ctx> CodeGen<'ctx> {
         // --- numberToText(n: i64) -> ptr ---
         {
             let fn_type = ptr_type.fn_type(&[i64_type.into()], false);
-            let func = self.module.add_function("englang_numberToText", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_numberToText", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             self.builder.position_at_end(entry);
 
@@ -770,7 +907,12 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder
                 .build_call(
                     c_snprintf,
-                    &[buf.into(), buf_size.into(), fmt.as_pointer_value().into(), n.into()],
+                    &[
+                        buf.into(),
+                        buf_size.into(),
+                        fmt.as_pointer_value().into(),
+                        n.into(),
+                    ],
                     "snprintf_result",
                 )
                 .map_err(|e| e.to_string())?;
@@ -789,7 +931,9 @@ impl<'ctx> CodeGen<'ctx> {
         // --- decimalToText(f: f64) -> ptr ---
         {
             let fn_type = ptr_type.fn_type(&[f64_type.into()], false);
-            let func = self.module.add_function("englang_decimalToText", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_decimalToText", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             self.builder.position_at_end(entry);
 
@@ -815,7 +959,12 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder
                 .build_call(
                     c_snprintf,
-                    &[buf.into(), buf_size.into(), fmt.as_pointer_value().into(), f.into()],
+                    &[
+                        buf.into(),
+                        buf_size.into(),
+                        fmt.as_pointer_value().into(),
+                        f.into(),
+                    ],
                     "snprintf_result",
                 )
                 .map_err(|e| e.to_string())?;
@@ -858,9 +1007,7 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_call(c_usleep, &[us_32.into()], "usleep_result")
                 .map_err(|e| e.to_string())?;
 
-            self.builder
-                .build_return(None)
-                .map_err(|e| e.to_string())?;
+            self.builder.build_return(None).map_err(|e| e.to_string())?;
 
             for name in &["sleep", "wait", "delay"] {
                 self.builtin_functions.insert(name.to_string(), func);
@@ -924,7 +1071,10 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_call(c_srand, &[time_32.into()], "")
                 .map_err(|e| e.to_string())?;
             self.builder
-                .build_store(seeded_global.as_pointer_value(), i32_type.const_int(1, false))
+                .build_store(
+                    seeded_global.as_pointer_value(),
+                    i32_type.const_int(1, false),
+                )
                 .map_err(|e| e.to_string())?;
             self.builder
                 .build_unconditional_branch(continue_bb)
@@ -966,7 +1116,9 @@ impl<'ctx> CodeGen<'ctx> {
         // Returns a random integer between min and max (inclusive)
         {
             let fn_type = i64_type.fn_type(&[i64_type.into(), i64_type.into()], false);
-            let func = self.module.add_function("englang_randomBetween", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_randomBetween", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             self.builder.position_at_end(entry);
 
@@ -1040,7 +1192,11 @@ impl<'ctx> CodeGen<'ctx> {
             // Open file
             let file = self
                 .builder
-                .build_call(c_fopen, &[path.into(), mode_str.as_pointer_value().into()], "file")
+                .build_call(
+                    c_fopen,
+                    &[path.into(), mode_str.as_pointer_value().into()],
+                    "file",
+                )
                 .map_err(|e| e.to_string())?
                 .try_as_basic_value();
             let file_ptr = match file {
@@ -1077,7 +1233,15 @@ impl<'ctx> CodeGen<'ctx> {
             // Seek to end to get file size
             let seek_end = i32_type.const_int(2, false); // SEEK_END
             self.builder
-                .build_call(c_fseek, &[file_ptr.into(), i64_type.const_zero().into(), seek_end.into()], "")
+                .build_call(
+                    c_fseek,
+                    &[
+                        file_ptr.into(),
+                        i64_type.const_zero().into(),
+                        seek_end.into(),
+                    ],
+                    "",
+                )
                 .map_err(|e| e.to_string())?;
 
             // Get file size
@@ -1113,7 +1277,16 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Read file contents
             self.builder
-                .build_call(c_fread, &[buf_ptr.into(), i64_type.const_int(1, false).into(), file_size.into(), file_ptr.into()], "")
+                .build_call(
+                    c_fread,
+                    &[
+                        buf_ptr.into(),
+                        i64_type.const_int(1, false).into(),
+                        file_size.into(),
+                        file_ptr.into(),
+                    ],
+                    "",
+                )
                 .map_err(|e| e.to_string())?;
 
             // Null terminate the buffer
@@ -1161,7 +1334,11 @@ impl<'ctx> CodeGen<'ctx> {
             // Open file for writing
             let file = self
                 .builder
-                .build_call(c_fopen, &[path.into(), mode_str.as_pointer_value().into()], "file")
+                .build_call(
+                    c_fopen,
+                    &[path.into(), mode_str.as_pointer_value().into()],
+                    "file",
+                )
                 .map_err(|e| e.to_string())?
                 .try_as_basic_value();
             let file_ptr = match file {
@@ -1209,7 +1386,16 @@ impl<'ctx> CodeGen<'ctx> {
             // Write content to file
             let written = self
                 .builder
-                .build_call(c_fwrite, &[content.into(), i64_type.const_int(1, false).into(), content_len.into(), file_ptr.into()], "written")
+                .build_call(
+                    c_fwrite,
+                    &[
+                        content.into(),
+                        i64_type.const_int(1, false).into(),
+                        content_len.into(),
+                        file_ptr.into(),
+                    ],
+                    "written",
+                )
                 .map_err(|e| e.to_string())?
                 .try_as_basic_value();
             let bytes_written = match written {
@@ -1259,10 +1445,17 @@ impl<'ctx> CodeGen<'ctx> {
             // Allocate: 16 bytes header + n * 8 bytes for elements
             let header_size = i64_type.const_int(16, false);
             let elem_size = i64_type.const_int(8, false);
-            let data_size = self.builder.build_int_mul(n, elem_size, "data_size").map_err(|e| e.to_string())?;
-            let total_size = self.builder.build_int_add(header_size, data_size, "total_size").map_err(|e| e.to_string())?;
+            let data_size = self
+                .builder
+                .build_int_mul(n, elem_size, "data_size")
+                .map_err(|e| e.to_string())?;
+            let total_size = self
+                .builder
+                .build_int_add(header_size, data_size, "total_size")
+                .map_err(|e| e.to_string())?;
 
-            let base_ptr = self.builder
+            let base_ptr = self
+                .builder
                 .build_call(malloc, &[total_size.into()], "base_ptr")
                 .map_err(|e| e.to_string())?
                 .try_as_basic_value();
@@ -1272,46 +1465,98 @@ impl<'ctx> CodeGen<'ctx> {
             };
 
             // Store length at offset 0
-            self.builder.build_store(base_ptr, n).map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(base_ptr, n)
+                .map_err(|e| e.to_string())?;
 
             // Store capacity at offset 8
             let cap_ptr = unsafe {
-                self.builder.build_gep(i8_type, base_ptr, &[i64_type.const_int(8, false)], "cap_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(
+                        i8_type,
+                        base_ptr,
+                        &[i64_type.const_int(8, false)],
+                        "cap_ptr",
+                    )
+                    .map_err(|e| e.to_string())?
             };
-            let cap_ptr = self.builder.build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(cap_ptr, n).map_err(|e| e.to_string())?;
+            let cap_ptr = self
+                .builder
+                .build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cap_ptr, n)
+                .map_err(|e| e.to_string())?;
 
             // Data starts at offset 16
             let data_ptr = unsafe {
-                self.builder.build_gep(i8_type, base_ptr, &[header_size], "data_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, base_ptr, &[header_size], "data_ptr")
+                    .map_err(|e| e.to_string())?
             };
 
             // Initialize all elements to 0.0
-            let counter = self.builder.build_alloca(i64_type, "counter").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_cond);
-            let i = self.builder.build_load(i64_type, counter, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, n, "cond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, loop_body, loop_end).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, n, "cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, loop_body, loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_body);
-            let offset = self.builder.build_int_mul(i, elem_size, "offset").map_err(|e| e.to_string())?;
+            let offset = self
+                .builder
+                .build_int_mul(i, elem_size, "offset")
+                .map_err(|e| e.to_string())?;
             let elem_ptr = unsafe {
-                self.builder.build_gep(i8_type, data_ptr, &[offset], "elem_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, data_ptr, &[offset], "elem_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let elem_ptr = self.builder.build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(elem_ptr, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
-            let next_i = self.builder.build_int_add(i, i64_type.const_int(1, false), "next_i").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_i).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let elem_ptr = self
+                .builder
+                .build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(elem_ptr, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
+            let next_i = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next_i")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_i)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_end);
-            self.builder.build_return(Some(&data_ptr)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&data_ptr))
+                .map_err(|e| e.to_string())?;
 
             self.builtin_functions.insert("zeros".to_string(), func);
-            self.builtin_return_types.insert("zeros".to_string(), Type::List(Box::new(Type::Float)));
+            self.builtin_return_types
+                .insert("zeros".to_string(), Type::List(Box::new(Type::Float)));
         }
 
         // --- ones(n: i64) -> ptr (array of floats initialized to 1.0) ---
@@ -1328,10 +1573,17 @@ impl<'ctx> CodeGen<'ctx> {
 
             let header_size = i64_type.const_int(16, false);
             let elem_size = i64_type.const_int(8, false);
-            let data_size = self.builder.build_int_mul(n, elem_size, "data_size").map_err(|e| e.to_string())?;
-            let total_size = self.builder.build_int_add(header_size, data_size, "total_size").map_err(|e| e.to_string())?;
+            let data_size = self
+                .builder
+                .build_int_mul(n, elem_size, "data_size")
+                .map_err(|e| e.to_string())?;
+            let total_size = self
+                .builder
+                .build_int_add(header_size, data_size, "total_size")
+                .map_err(|e| e.to_string())?;
 
-            let base_ptr = self.builder
+            let base_ptr = self
+                .builder
                 .build_call(malloc, &[total_size.into()], "base_ptr")
                 .map_err(|e| e.to_string())?
                 .try_as_basic_value();
@@ -1340,42 +1592,94 @@ impl<'ctx> CodeGen<'ctx> {
                 _ => return Err("malloc returned void".to_string()),
             };
 
-            self.builder.build_store(base_ptr, n).map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(base_ptr, n)
+                .map_err(|e| e.to_string())?;
             let cap_ptr = unsafe {
-                self.builder.build_gep(i8_type, base_ptr, &[i64_type.const_int(8, false)], "cap_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(
+                        i8_type,
+                        base_ptr,
+                        &[i64_type.const_int(8, false)],
+                        "cap_ptr",
+                    )
+                    .map_err(|e| e.to_string())?
             };
-            let cap_ptr = self.builder.build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(cap_ptr, n).map_err(|e| e.to_string())?;
+            let cap_ptr = self
+                .builder
+                .build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cap_ptr, n)
+                .map_err(|e| e.to_string())?;
 
             let data_ptr = unsafe {
-                self.builder.build_gep(i8_type, base_ptr, &[header_size], "data_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, base_ptr, &[header_size], "data_ptr")
+                    .map_err(|e| e.to_string())?
             };
 
-            let counter = self.builder.build_alloca(i64_type, "counter").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_cond);
-            let i = self.builder.build_load(i64_type, counter, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, n, "cond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, loop_body, loop_end).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, n, "cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, loop_body, loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_body);
-            let offset = self.builder.build_int_mul(i, elem_size, "offset").map_err(|e| e.to_string())?;
+            let offset = self
+                .builder
+                .build_int_mul(i, elem_size, "offset")
+                .map_err(|e| e.to_string())?;
             let elem_ptr = unsafe {
-                self.builder.build_gep(i8_type, data_ptr, &[offset], "elem_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, data_ptr, &[offset], "elem_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let elem_ptr = self.builder.build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(elem_ptr, f64_type.const_float(1.0)).map_err(|e| e.to_string())?;
-            let next_i = self.builder.build_int_add(i, i64_type.const_int(1, false), "next_i").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_i).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let elem_ptr = self
+                .builder
+                .build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(elem_ptr, f64_type.const_float(1.0))
+                .map_err(|e| e.to_string())?;
+            let next_i = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next_i")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_i)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_end);
-            self.builder.build_return(Some(&data_ptr)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&data_ptr))
+                .map_err(|e| e.to_string())?;
 
             self.builtin_functions.insert("ones".to_string(), func);
-            self.builtin_return_types.insert("ones".to_string(), Type::List(Box::new(Type::Float)));
+            self.builtin_return_types
+                .insert("ones".to_string(), Type::List(Box::new(Type::Float)));
         }
 
         // --- range(start: i64, end: i64) -> ptr (array of ints from start to end-1) ---
@@ -1392,14 +1696,24 @@ impl<'ctx> CodeGen<'ctx> {
             let end = func.get_nth_param(1).unwrap().into_int_value();
 
             // n = end - start
-            let n = self.builder.build_int_sub(end, start, "n").map_err(|e| e.to_string())?;
+            let n = self
+                .builder
+                .build_int_sub(end, start, "n")
+                .map_err(|e| e.to_string())?;
 
             let header_size = i64_type.const_int(16, false);
             let elem_size = i64_type.const_int(8, false);
-            let data_size = self.builder.build_int_mul(n, elem_size, "data_size").map_err(|e| e.to_string())?;
-            let total_size = self.builder.build_int_add(header_size, data_size, "total_size").map_err(|e| e.to_string())?;
+            let data_size = self
+                .builder
+                .build_int_mul(n, elem_size, "data_size")
+                .map_err(|e| e.to_string())?;
+            let total_size = self
+                .builder
+                .build_int_add(header_size, data_size, "total_size")
+                .map_err(|e| e.to_string())?;
 
-            let base_ptr = self.builder
+            let base_ptr = self
+                .builder
                 .build_call(malloc, &[total_size.into()], "base_ptr")
                 .map_err(|e| e.to_string())?
                 .try_as_basic_value();
@@ -1408,50 +1722,107 @@ impl<'ctx> CodeGen<'ctx> {
                 _ => return Err("malloc returned void".to_string()),
             };
 
-            self.builder.build_store(base_ptr, n).map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(base_ptr, n)
+                .map_err(|e| e.to_string())?;
             let cap_ptr = unsafe {
-                self.builder.build_gep(i8_type, base_ptr, &[i64_type.const_int(8, false)], "cap_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(
+                        i8_type,
+                        base_ptr,
+                        &[i64_type.const_int(8, false)],
+                        "cap_ptr",
+                    )
+                    .map_err(|e| e.to_string())?
             };
-            let cap_ptr = self.builder.build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(cap_ptr, n).map_err(|e| e.to_string())?;
+            let cap_ptr = self
+                .builder
+                .build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cap_ptr, n)
+                .map_err(|e| e.to_string())?;
 
             let data_ptr = unsafe {
-                self.builder.build_gep(i8_type, base_ptr, &[header_size], "data_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, base_ptr, &[header_size], "data_ptr")
+                    .map_err(|e| e.to_string())?
             };
 
-            let counter = self.builder.build_alloca(i64_type, "counter").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_cond);
-            let i = self.builder.build_load(i64_type, counter, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, n, "cond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, loop_body, loop_end).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, n, "cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, loop_body, loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_body);
             // arr[i] = start + i
-            let value = self.builder.build_int_add(start, i, "value").map_err(|e| e.to_string())?;
-            let offset = self.builder.build_int_mul(i, elem_size, "offset").map_err(|e| e.to_string())?;
+            let value = self
+                .builder
+                .build_int_add(start, i, "value")
+                .map_err(|e| e.to_string())?;
+            let offset = self
+                .builder
+                .build_int_mul(i, elem_size, "offset")
+                .map_err(|e| e.to_string())?;
             let elem_ptr = unsafe {
-                self.builder.build_gep(i8_type, data_ptr, &[offset], "elem_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, data_ptr, &[offset], "elem_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let elem_ptr = self.builder.build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(elem_ptr, value).map_err(|e| e.to_string())?;
-            let next_i = self.builder.build_int_add(i, i64_type.const_int(1, false), "next_i").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_i).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let elem_ptr = self
+                .builder
+                .build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(elem_ptr, value)
+                .map_err(|e| e.to_string())?;
+            let next_i = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next_i")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_i)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_end);
-            self.builder.build_return(Some(&data_ptr)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&data_ptr))
+                .map_err(|e| e.to_string())?;
 
             self.builtin_functions.insert("range".to_string(), func);
-            self.builtin_return_types.insert("range".to_string(), Type::List(Box::new(Type::Int)));
+            self.builtin_return_types
+                .insert("range".to_string(), Type::List(Box::new(Type::Int)));
         }
 
         // --- arrayLength(arr: ptr) -> i64 ---
         {
             let fn_type = i64_type.fn_type(&[ptr_type.into()], false);
-            let func = self.module.add_function("englang_arrayLength", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_arrayLength", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             self.builder.position_at_end(entry);
 
@@ -1460,16 +1831,27 @@ impl<'ctx> CodeGen<'ctx> {
             // Length is at offset -16 from data pointer
             let neg_16 = i64_type.const_int((-16i64) as u64, true);
             let len_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[neg_16], "len_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[neg_16], "len_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let len_ptr = self.builder.build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, len_ptr, "len").map_err(|e| e.to_string())?;
+            let len_ptr = self
+                .builder
+                .build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, len_ptr, "len")
+                .map_err(|e| e.to_string())?;
 
-            self.builder.build_return(Some(&len)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&len))
+                .map_err(|e| e.to_string())?;
 
             for name in &["arrayLength", "len"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::Int);
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::Int);
             }
         }
 
@@ -1488,44 +1870,108 @@ impl<'ctx> CodeGen<'ctx> {
             // Get length from header
             let neg_16 = i64_type.const_int((-16i64) as u64, true);
             let len_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[neg_16], "len_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[neg_16], "len_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let len_ptr = self.builder.build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, len_ptr, "len").map_err(|e| e.to_string())?.into_int_value();
+            let len_ptr = self
+                .builder
+                .build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, len_ptr, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
 
-            let total = self.builder.build_alloca(f64_type, "total").map_err(|e| e.to_string())?;
-            self.builder.build_store(total, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
+            let total = self
+                .builder
+                .build_alloca(f64_type, "total")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(total, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
 
-            let counter = self.builder.build_alloca(i64_type, "counter").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_cond);
-            let i = self.builder.build_load(i64_type, counter, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, loop_body, loop_end).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, loop_body, loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_body);
             let elem_size = i64_type.const_int(8, false);
-            let offset = self.builder.build_int_mul(i, elem_size, "offset").map_err(|e| e.to_string())?;
+            let offset = self
+                .builder
+                .build_int_mul(i, elem_size, "offset")
+                .map_err(|e| e.to_string())?;
             let elem_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[offset], "elem_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[offset], "elem_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let elem_ptr = self.builder.build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed").map_err(|e| e.to_string())?;
-            let elem = self.builder.build_load(f64_type, elem_ptr, "elem").map_err(|e| e.to_string())?.into_float_value();
-            let current = self.builder.build_load(f64_type, total, "current").map_err(|e| e.to_string())?.into_float_value();
-            let new_total = self.builder.build_float_add(current, elem, "new_total").map_err(|e| e.to_string())?;
-            self.builder.build_store(total, new_total).map_err(|e| e.to_string())?;
-            let next_i = self.builder.build_int_add(i, i64_type.const_int(1, false), "next_i").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_i).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let elem_ptr = self
+                .builder
+                .build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let elem = self
+                .builder
+                .build_load(f64_type, elem_ptr, "elem")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let current = self
+                .builder
+                .build_load(f64_type, total, "current")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_total = self
+                .builder
+                .build_float_add(current, elem, "new_total")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(total, new_total)
+                .map_err(|e| e.to_string())?;
+            let next_i = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next_i")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_i)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_end);
-            let result = self.builder.build_load(f64_type, total, "result").map_err(|e| e.to_string())?;
-            self.builder.build_return(Some(&result)).map_err(|e| e.to_string())?;
+            let result = self
+                .builder
+                .build_load(f64_type, total, "result")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&result))
+                .map_err(|e| e.to_string())?;
 
             self.builtin_functions.insert("sum".to_string(), func);
-            self.builtin_return_types.insert("sum".to_string(), Type::Float);
+            self.builtin_return_types
+                .insert("sum".to_string(), Type::Float);
         }
 
         // --- mean(arr: ptr) -> f64 ---
@@ -1542,47 +1988,118 @@ impl<'ctx> CodeGen<'ctx> {
 
             let neg_16 = i64_type.const_int((-16i64) as u64, true);
             let len_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[neg_16], "len_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[neg_16], "len_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let len_ptr = self.builder.build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, len_ptr, "len").map_err(|e| e.to_string())?.into_int_value();
+            let len_ptr = self
+                .builder
+                .build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, len_ptr, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
 
-            let total = self.builder.build_alloca(f64_type, "total").map_err(|e| e.to_string())?;
-            self.builder.build_store(total, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
+            let total = self
+                .builder
+                .build_alloca(f64_type, "total")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(total, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
 
-            let counter = self.builder.build_alloca(i64_type, "counter").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_cond);
-            let i = self.builder.build_load(i64_type, counter, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, loop_body, loop_end).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, loop_body, loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_body);
             let elem_size = i64_type.const_int(8, false);
-            let offset = self.builder.build_int_mul(i, elem_size, "offset").map_err(|e| e.to_string())?;
+            let offset = self
+                .builder
+                .build_int_mul(i, elem_size, "offset")
+                .map_err(|e| e.to_string())?;
             let elem_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[offset], "elem_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[offset], "elem_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let elem_ptr = self.builder.build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed").map_err(|e| e.to_string())?;
-            let elem = self.builder.build_load(f64_type, elem_ptr, "elem").map_err(|e| e.to_string())?.into_float_value();
-            let current = self.builder.build_load(f64_type, total, "current").map_err(|e| e.to_string())?.into_float_value();
-            let new_total = self.builder.build_float_add(current, elem, "new_total").map_err(|e| e.to_string())?;
-            self.builder.build_store(total, new_total).map_err(|e| e.to_string())?;
-            let next_i = self.builder.build_int_add(i, i64_type.const_int(1, false), "next_i").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_i).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let elem_ptr = self
+                .builder
+                .build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let elem = self
+                .builder
+                .build_load(f64_type, elem_ptr, "elem")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let current = self
+                .builder
+                .build_load(f64_type, total, "current")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_total = self
+                .builder
+                .build_float_add(current, elem, "new_total")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(total, new_total)
+                .map_err(|e| e.to_string())?;
+            let next_i = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next_i")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_i)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_end);
-            let sum = self.builder.build_load(f64_type, total, "sum").map_err(|e| e.to_string())?.into_float_value();
-            let len_float = self.builder.build_signed_int_to_float(len, f64_type, "len_float").map_err(|e| e.to_string())?;
-            let mean = self.builder.build_float_div(sum, len_float, "mean").map_err(|e| e.to_string())?;
-            self.builder.build_return(Some(&mean)).map_err(|e| e.to_string())?;
+            let sum = self
+                .builder
+                .build_load(f64_type, total, "sum")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let len_float = self
+                .builder
+                .build_signed_int_to_float(len, f64_type, "len_float")
+                .map_err(|e| e.to_string())?;
+            let mean = self
+                .builder
+                .build_float_div(sum, len_float, "mean")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&mean))
+                .map_err(|e| e.to_string())?;
 
             for name in &["mean", "average"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::Float);
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::Float);
             }
         }
 
@@ -1600,57 +2117,131 @@ impl<'ctx> CodeGen<'ctx> {
 
             let neg_16 = i64_type.const_int((-16i64) as u64, true);
             let len_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[neg_16], "len_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[neg_16], "len_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let len_ptr = self.builder.build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, len_ptr, "len").map_err(|e| e.to_string())?.into_int_value();
+            let len_ptr = self
+                .builder
+                .build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, len_ptr, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
 
             // Initialize min to first element
-            let first_ptr = self.builder.build_pointer_cast(arr, ptr_type, "first_ptr").map_err(|e| e.to_string())?;
-            let first = self.builder.build_load(f64_type, first_ptr, "first").map_err(|e| e.to_string())?.into_float_value();
-            let min_val = self.builder.build_alloca(f64_type, "min_val").map_err(|e| e.to_string())?;
-            self.builder.build_store(min_val, first).map_err(|e| e.to_string())?;
+            let first_ptr = self
+                .builder
+                .build_pointer_cast(arr, ptr_type, "first_ptr")
+                .map_err(|e| e.to_string())?;
+            let first = self
+                .builder
+                .build_load(f64_type, first_ptr, "first")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let min_val = self
+                .builder
+                .build_alloca(f64_type, "min_val")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(min_val, first)
+                .map_err(|e| e.to_string())?;
 
-            let counter = self.builder.build_alloca(i64_type, "counter").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, i64_type.const_int(1, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(1, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_cond);
-            let i = self.builder.build_load(i64_type, counter, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, loop_body, loop_end).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, loop_body, loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_body);
             let elem_size = i64_type.const_int(8, false);
-            let offset = self.builder.build_int_mul(i, elem_size, "offset").map_err(|e| e.to_string())?;
+            let offset = self
+                .builder
+                .build_int_mul(i, elem_size, "offset")
+                .map_err(|e| e.to_string())?;
             let elem_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[offset], "elem_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[offset], "elem_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let elem_ptr = self.builder.build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed").map_err(|e| e.to_string())?;
-            let elem = self.builder.build_load(f64_type, elem_ptr, "elem").map_err(|e| e.to_string())?.into_float_value();
-            let current_min = self.builder.build_load(f64_type, min_val, "current_min").map_err(|e| e.to_string())?.into_float_value();
+            let elem_ptr = self
+                .builder
+                .build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let elem = self
+                .builder
+                .build_load(f64_type, elem_ptr, "elem")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let current_min = self
+                .builder
+                .build_load(f64_type, min_val, "current_min")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
 
             // Use fmin to get the smaller value
-            let c_fmin = self.module.get_function("fmin").ok_or("fmin not declared")?;
-            let new_min = self.builder.build_call(c_fmin, &[current_min.into(), elem.into()], "new_min")
-                .map_err(|e| e.to_string())?.try_as_basic_value();
+            let c_fmin = self
+                .module
+                .get_function("fmin")
+                .ok_or("fmin not declared")?;
+            let new_min = self
+                .builder
+                .build_call(c_fmin, &[current_min.into(), elem.into()], "new_min")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
             let new_min = match new_min {
                 ValueKind::Basic(v) => v.into_float_value(),
                 _ => return Err("fmin returned void".to_string()),
             };
-            self.builder.build_store(min_val, new_min).map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(min_val, new_min)
+                .map_err(|e| e.to_string())?;
 
-            let next_i = self.builder.build_int_add(i, i64_type.const_int(1, false), "next_i").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_i).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let next_i = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next_i")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_i)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_end);
-            let result = self.builder.build_load(f64_type, min_val, "result").map_err(|e| e.to_string())?;
-            self.builder.build_return(Some(&result)).map_err(|e| e.to_string())?;
+            let result = self
+                .builder
+                .build_load(f64_type, min_val, "result")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&result))
+                .map_err(|e| e.to_string())?;
 
             for name in &["arrayMin", "minOf"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::Float);
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::Float);
             }
         }
 
@@ -1668,55 +2259,129 @@ impl<'ctx> CodeGen<'ctx> {
 
             let neg_16 = i64_type.const_int((-16i64) as u64, true);
             let len_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[neg_16], "len_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[neg_16], "len_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let len_ptr = self.builder.build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, len_ptr, "len").map_err(|e| e.to_string())?.into_int_value();
+            let len_ptr = self
+                .builder
+                .build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, len_ptr, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
 
-            let first_ptr = self.builder.build_pointer_cast(arr, ptr_type, "first_ptr").map_err(|e| e.to_string())?;
-            let first = self.builder.build_load(f64_type, first_ptr, "first").map_err(|e| e.to_string())?.into_float_value();
-            let max_val = self.builder.build_alloca(f64_type, "max_val").map_err(|e| e.to_string())?;
-            self.builder.build_store(max_val, first).map_err(|e| e.to_string())?;
+            let first_ptr = self
+                .builder
+                .build_pointer_cast(arr, ptr_type, "first_ptr")
+                .map_err(|e| e.to_string())?;
+            let first = self
+                .builder
+                .build_load(f64_type, first_ptr, "first")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let max_val = self
+                .builder
+                .build_alloca(f64_type, "max_val")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(max_val, first)
+                .map_err(|e| e.to_string())?;
 
-            let counter = self.builder.build_alloca(i64_type, "counter").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, i64_type.const_int(1, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(1, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_cond);
-            let i = self.builder.build_load(i64_type, counter, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, loop_body, loop_end).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, loop_body, loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_body);
             let elem_size = i64_type.const_int(8, false);
-            let offset = self.builder.build_int_mul(i, elem_size, "offset").map_err(|e| e.to_string())?;
+            let offset = self
+                .builder
+                .build_int_mul(i, elem_size, "offset")
+                .map_err(|e| e.to_string())?;
             let elem_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[offset], "elem_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[offset], "elem_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let elem_ptr = self.builder.build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed").map_err(|e| e.to_string())?;
-            let elem = self.builder.build_load(f64_type, elem_ptr, "elem").map_err(|e| e.to_string())?.into_float_value();
-            let current_max = self.builder.build_load(f64_type, max_val, "current_max").map_err(|e| e.to_string())?.into_float_value();
+            let elem_ptr = self
+                .builder
+                .build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let elem = self
+                .builder
+                .build_load(f64_type, elem_ptr, "elem")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let current_max = self
+                .builder
+                .build_load(f64_type, max_val, "current_max")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
 
-            let c_fmax = self.module.get_function("fmax").ok_or("fmax not declared")?;
-            let new_max = self.builder.build_call(c_fmax, &[current_max.into(), elem.into()], "new_max")
-                .map_err(|e| e.to_string())?.try_as_basic_value();
+            let c_fmax = self
+                .module
+                .get_function("fmax")
+                .ok_or("fmax not declared")?;
+            let new_max = self
+                .builder
+                .build_call(c_fmax, &[current_max.into(), elem.into()], "new_max")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
             let new_max = match new_max {
                 ValueKind::Basic(v) => v.into_float_value(),
                 _ => return Err("fmax returned void".to_string()),
             };
-            self.builder.build_store(max_val, new_max).map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(max_val, new_max)
+                .map_err(|e| e.to_string())?;
 
-            let next_i = self.builder.build_int_add(i, i64_type.const_int(1, false), "next_i").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_i).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let next_i = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next_i")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_i)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_end);
-            let result = self.builder.build_load(f64_type, max_val, "result").map_err(|e| e.to_string())?;
-            self.builder.build_return(Some(&result)).map_err(|e| e.to_string())?;
+            let result = self
+                .builder
+                .build_load(f64_type, max_val, "result")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&result))
+                .map_err(|e| e.to_string())?;
 
             for name in &["arrayMax", "maxOf"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::Float);
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::Float);
             }
         }
 
@@ -1736,21 +2401,40 @@ impl<'ctx> CodeGen<'ctx> {
             // Get old length
             let neg_16 = i64_type.const_int((-16i64) as u64, true);
             let len_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[neg_16], "len_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[neg_16], "len_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let len_ptr = self.builder.build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed").map_err(|e| e.to_string())?;
-            let old_len = self.builder.build_load(i64_type, len_ptr, "old_len").map_err(|e| e.to_string())?.into_int_value();
+            let len_ptr = self
+                .builder
+                .build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let old_len = self
+                .builder
+                .build_load(i64_type, len_ptr, "old_len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
 
             // New length = old_len + 1
-            let new_len = self.builder.build_int_add(old_len, i64_type.const_int(1, false), "new_len").map_err(|e| e.to_string())?;
+            let new_len = self
+                .builder
+                .build_int_add(old_len, i64_type.const_int(1, false), "new_len")
+                .map_err(|e| e.to_string())?;
 
             // Allocate new array
             let header_size = i64_type.const_int(16, false);
             let elem_size = i64_type.const_int(8, false);
-            let data_size = self.builder.build_int_mul(new_len, elem_size, "data_size").map_err(|e| e.to_string())?;
-            let total_size = self.builder.build_int_add(header_size, data_size, "total_size").map_err(|e| e.to_string())?;
+            let data_size = self
+                .builder
+                .build_int_mul(new_len, elem_size, "data_size")
+                .map_err(|e| e.to_string())?;
+            let total_size = self
+                .builder
+                .build_int_add(header_size, data_size, "total_size")
+                .map_err(|e| e.to_string())?;
 
-            let base_ptr = self.builder
+            let base_ptr = self
+                .builder
                 .build_call(malloc, &[total_size.into()], "base_ptr")
                 .map_err(|e| e.to_string())?
                 .try_as_basic_value();
@@ -1760,57 +2444,127 @@ impl<'ctx> CodeGen<'ctx> {
             };
 
             // Store new length and capacity
-            self.builder.build_store(base_ptr, new_len).map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(base_ptr, new_len)
+                .map_err(|e| e.to_string())?;
             let cap_ptr = unsafe {
-                self.builder.build_gep(i8_type, base_ptr, &[i64_type.const_int(8, false)], "cap_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(
+                        i8_type,
+                        base_ptr,
+                        &[i64_type.const_int(8, false)],
+                        "cap_ptr",
+                    )
+                    .map_err(|e| e.to_string())?
             };
-            let cap_ptr = self.builder.build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(cap_ptr, new_len).map_err(|e| e.to_string())?;
+            let cap_ptr = self
+                .builder
+                .build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cap_ptr, new_len)
+                .map_err(|e| e.to_string())?;
 
             let new_data_ptr = unsafe {
-                self.builder.build_gep(i8_type, base_ptr, &[header_size], "new_data_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, base_ptr, &[header_size], "new_data_ptr")
+                    .map_err(|e| e.to_string())?
             };
 
             // Copy old elements
-            let counter = self.builder.build_alloca(i64_type, "counter").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_cond);
-            let i = self.builder.build_load(i64_type, counter, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, old_len, "cond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, loop_body, loop_end).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, old_len, "cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, loop_body, loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_body);
-            let offset = self.builder.build_int_mul(i, elem_size, "offset").map_err(|e| e.to_string())?;
+            let offset = self
+                .builder
+                .build_int_mul(i, elem_size, "offset")
+                .map_err(|e| e.to_string())?;
             let src_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[offset], "src_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[offset], "src_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let src_ptr = self.builder.build_pointer_cast(src_ptr, ptr_type, "src_ptr_typed").map_err(|e| e.to_string())?;
-            let elem = self.builder.build_load(i64_type, src_ptr, "elem").map_err(|e| e.to_string())?;
+            let src_ptr = self
+                .builder
+                .build_pointer_cast(src_ptr, ptr_type, "src_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let elem = self
+                .builder
+                .build_load(i64_type, src_ptr, "elem")
+                .map_err(|e| e.to_string())?;
             let dst_ptr = unsafe {
-                self.builder.build_gep(i8_type, new_data_ptr, &[offset], "dst_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, new_data_ptr, &[offset], "dst_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let dst_ptr = self.builder.build_pointer_cast(dst_ptr, ptr_type, "dst_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(dst_ptr, elem).map_err(|e| e.to_string())?;
-            let next_i = self.builder.build_int_add(i, i64_type.const_int(1, false), "next_i").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_i).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let dst_ptr = self
+                .builder
+                .build_pointer_cast(dst_ptr, ptr_type, "dst_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(dst_ptr, elem)
+                .map_err(|e| e.to_string())?;
+            let next_i = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next_i")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_i)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_end);
             // Append new value at end
-            let last_offset = self.builder.build_int_mul(old_len, elem_size, "last_offset").map_err(|e| e.to_string())?;
+            let last_offset = self
+                .builder
+                .build_int_mul(old_len, elem_size, "last_offset")
+                .map_err(|e| e.to_string())?;
             let last_ptr = unsafe {
-                self.builder.build_gep(i8_type, new_data_ptr, &[last_offset], "last_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, new_data_ptr, &[last_offset], "last_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let last_ptr = self.builder.build_pointer_cast(last_ptr, ptr_type, "last_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(last_ptr, value).map_err(|e| e.to_string())?;
+            let last_ptr = self
+                .builder
+                .build_pointer_cast(last_ptr, ptr_type, "last_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(last_ptr, value)
+                .map_err(|e| e.to_string())?;
 
-            self.builder.build_return(Some(&new_data_ptr)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&new_data_ptr))
+                .map_err(|e| e.to_string())?;
 
             for name in &["append", "push"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::List(Box::new(Type::Int)));
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::List(Box::new(Type::Int)));
             }
         }
 
@@ -1829,18 +2583,34 @@ impl<'ctx> CodeGen<'ctx> {
             // Get length
             let neg_16 = i64_type.const_int((-16i64) as u64, true);
             let len_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[neg_16], "len_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[neg_16], "len_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let len_ptr = self.builder.build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, len_ptr, "len").map_err(|e| e.to_string())?.into_int_value();
+            let len_ptr = self
+                .builder
+                .build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, len_ptr, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
 
             // Allocate new array
             let header_size = i64_type.const_int(16, false);
             let elem_size = i64_type.const_int(8, false);
-            let data_size = self.builder.build_int_mul(len, elem_size, "data_size").map_err(|e| e.to_string())?;
-            let total_size = self.builder.build_int_add(header_size, data_size, "total_size").map_err(|e| e.to_string())?;
+            let data_size = self
+                .builder
+                .build_int_mul(len, elem_size, "data_size")
+                .map_err(|e| e.to_string())?;
+            let total_size = self
+                .builder
+                .build_int_add(header_size, data_size, "total_size")
+                .map_err(|e| e.to_string())?;
 
-            let base_ptr = self.builder
+            let base_ptr = self
+                .builder
                 .build_call(malloc, &[total_size.into()], "base_ptr")
                 .map_err(|e| e.to_string())?
                 .try_as_basic_value();
@@ -1849,54 +2619,123 @@ impl<'ctx> CodeGen<'ctx> {
                 _ => return Err("malloc returned void".to_string()),
             };
 
-            self.builder.build_store(base_ptr, len).map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(base_ptr, len)
+                .map_err(|e| e.to_string())?;
             let cap_ptr = unsafe {
-                self.builder.build_gep(i8_type, base_ptr, &[i64_type.const_int(8, false)], "cap_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(
+                        i8_type,
+                        base_ptr,
+                        &[i64_type.const_int(8, false)],
+                        "cap_ptr",
+                    )
+                    .map_err(|e| e.to_string())?
             };
-            let cap_ptr = self.builder.build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(cap_ptr, len).map_err(|e| e.to_string())?;
+            let cap_ptr = self
+                .builder
+                .build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cap_ptr, len)
+                .map_err(|e| e.to_string())?;
 
             let new_data_ptr = unsafe {
-                self.builder.build_gep(i8_type, base_ptr, &[header_size], "new_data_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, base_ptr, &[header_size], "new_data_ptr")
+                    .map_err(|e| e.to_string())?
             };
 
             // Copy elements in reverse order
-            let counter = self.builder.build_alloca(i64_type, "counter").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_cond);
-            let i = self.builder.build_load(i64_type, counter, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, loop_body, loop_end).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, loop_body, loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_body);
             // src_idx = len - 1 - i
-            let len_minus_1 = self.builder.build_int_sub(len, i64_type.const_int(1, false), "len_minus_1").map_err(|e| e.to_string())?;
-            let src_idx = self.builder.build_int_sub(len_minus_1, i, "src_idx").map_err(|e| e.to_string())?;
-            let src_offset = self.builder.build_int_mul(src_idx, elem_size, "src_offset").map_err(|e| e.to_string())?;
+            let len_minus_1 = self
+                .builder
+                .build_int_sub(len, i64_type.const_int(1, false), "len_minus_1")
+                .map_err(|e| e.to_string())?;
+            let src_idx = self
+                .builder
+                .build_int_sub(len_minus_1, i, "src_idx")
+                .map_err(|e| e.to_string())?;
+            let src_offset = self
+                .builder
+                .build_int_mul(src_idx, elem_size, "src_offset")
+                .map_err(|e| e.to_string())?;
             let src_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[src_offset], "src_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[src_offset], "src_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let src_ptr = self.builder.build_pointer_cast(src_ptr, ptr_type, "src_ptr_typed").map_err(|e| e.to_string())?;
-            let elem = self.builder.build_load(i64_type, src_ptr, "elem").map_err(|e| e.to_string())?;
+            let src_ptr = self
+                .builder
+                .build_pointer_cast(src_ptr, ptr_type, "src_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let elem = self
+                .builder
+                .build_load(i64_type, src_ptr, "elem")
+                .map_err(|e| e.to_string())?;
 
-            let dst_offset = self.builder.build_int_mul(i, elem_size, "dst_offset").map_err(|e| e.to_string())?;
+            let dst_offset = self
+                .builder
+                .build_int_mul(i, elem_size, "dst_offset")
+                .map_err(|e| e.to_string())?;
             let dst_ptr = unsafe {
-                self.builder.build_gep(i8_type, new_data_ptr, &[dst_offset], "dst_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, new_data_ptr, &[dst_offset], "dst_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let dst_ptr = self.builder.build_pointer_cast(dst_ptr, ptr_type, "dst_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(dst_ptr, elem).map_err(|e| e.to_string())?;
+            let dst_ptr = self
+                .builder
+                .build_pointer_cast(dst_ptr, ptr_type, "dst_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(dst_ptr, elem)
+                .map_err(|e| e.to_string())?;
 
-            let next_i = self.builder.build_int_add(i, i64_type.const_int(1, false), "next_i").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_i).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let next_i = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next_i")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_i)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_end);
-            self.builder.build_return(Some(&new_data_ptr)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&new_data_ptr))
+                .map_err(|e| e.to_string())?;
 
             self.builtin_functions.insert("reverse".to_string(), func);
-            self.builtin_return_types.insert("reverse".to_string(), Type::List(Box::new(Type::Int)));
+            self.builtin_return_types
+                .insert("reverse".to_string(), Type::List(Box::new(Type::Int)));
         }
 
         // ==================== ML/STATISTICS FUNCTIONS ====================
@@ -1920,78 +2759,208 @@ impl<'ctx> CodeGen<'ctx> {
             // Get length from header
             let neg_16 = i64_type.const_int((-16i64) as u64, true);
             let len_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[neg_16], "len_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[neg_16], "len_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let len_ptr = self.builder.build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, len_ptr, "len").map_err(|e| e.to_string())?.into_int_value();
+            let len_ptr = self
+                .builder
+                .build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, len_ptr, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
 
             // Pass 1: Calculate mean
-            let sum = self.builder.build_alloca(f64_type, "sum").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
-            let counter = self.builder.build_alloca(i64_type, "counter").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(mean_loop_cond).map_err(|e| e.to_string())?;
+            let sum = self
+                .builder
+                .build_alloca(f64_type, "sum")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(mean_loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(mean_loop_cond);
-            let i = self.builder.build_load(i64_type, counter, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, mean_loop_body, mean_loop_end).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, mean_loop_body, mean_loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(mean_loop_body);
             let elem_size = i64_type.const_int(8, false);
-            let offset = self.builder.build_int_mul(i, elem_size, "offset").map_err(|e| e.to_string())?;
+            let offset = self
+                .builder
+                .build_int_mul(i, elem_size, "offset")
+                .map_err(|e| e.to_string())?;
             let elem_ptr = unsafe {
-                self.builder.build_gep(i8_type, arr, &[offset], "elem_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[offset], "elem_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let elem_ptr = self.builder.build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed").map_err(|e| e.to_string())?;
-            let elem = self.builder.build_load(f64_type, elem_ptr, "elem").map_err(|e| e.to_string())?.into_float_value();
-            let current_sum = self.builder.build_load(f64_type, sum, "current_sum").map_err(|e| e.to_string())?.into_float_value();
-            let new_sum = self.builder.build_float_add(current_sum, elem, "new_sum").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum, new_sum).map_err(|e| e.to_string())?;
-            let next_i = self.builder.build_int_add(i, i64_type.const_int(1, false), "next_i").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_i).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(mean_loop_cond).map_err(|e| e.to_string())?;
+            let elem_ptr = self
+                .builder
+                .build_pointer_cast(elem_ptr, ptr_type, "elem_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let elem = self
+                .builder
+                .build_load(f64_type, elem_ptr, "elem")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let current_sum = self
+                .builder
+                .build_load(f64_type, sum, "current_sum")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_sum = self
+                .builder
+                .build_float_add(current_sum, elem, "new_sum")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum, new_sum)
+                .map_err(|e| e.to_string())?;
+            let next_i = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next_i")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_i)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(mean_loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(mean_loop_end);
-            let total = self.builder.build_load(f64_type, sum, "total").map_err(|e| e.to_string())?.into_float_value();
-            let len_float = self.builder.build_signed_int_to_float(len, f64_type, "len_float").map_err(|e| e.to_string())?;
-            let mean = self.builder.build_float_div(total, len_float, "mean").map_err(|e| e.to_string())?;
+            let total = self
+                .builder
+                .build_load(f64_type, sum, "total")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let len_float = self
+                .builder
+                .build_signed_int_to_float(len, f64_type, "len_float")
+                .map_err(|e| e.to_string())?;
+            let mean = self
+                .builder
+                .build_float_div(total, len_float, "mean")
+                .map_err(|e| e.to_string())?;
 
             // Pass 2: Calculate sum of squared differences
-            let sq_sum = self.builder.build_alloca(f64_type, "sq_sum").map_err(|e| e.to_string())?;
-            self.builder.build_store(sq_sum, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(var_loop_cond).map_err(|e| e.to_string())?;
+            let sq_sum = self
+                .builder
+                .build_alloca(f64_type, "sq_sum")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sq_sum, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(var_loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(var_loop_cond);
-            let i2 = self.builder.build_load(i64_type, counter, "i2").map_err(|e| e.to_string())?.into_int_value();
-            let cond2 = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i2, len, "cond2").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond2, var_loop_body, var_loop_end).map_err(|e| e.to_string())?;
+            let i2 = self
+                .builder
+                .build_load(i64_type, counter, "i2")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond2 = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i2, len, "cond2")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond2, var_loop_body, var_loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(var_loop_body);
-            let offset2 = self.builder.build_int_mul(i2, elem_size, "offset2").map_err(|e| e.to_string())?;
+            let offset2 = self
+                .builder
+                .build_int_mul(i2, elem_size, "offset2")
+                .map_err(|e| e.to_string())?;
             let elem_ptr2 = unsafe {
-                self.builder.build_gep(i8_type, arr, &[offset2], "elem_ptr2").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, arr, &[offset2], "elem_ptr2")
+                    .map_err(|e| e.to_string())?
             };
-            let elem_ptr2 = self.builder.build_pointer_cast(elem_ptr2, ptr_type, "elem_ptr2_typed").map_err(|e| e.to_string())?;
-            let elem2 = self.builder.build_load(f64_type, elem_ptr2, "elem2").map_err(|e| e.to_string())?.into_float_value();
-            let diff = self.builder.build_float_sub(elem2, mean, "diff").map_err(|e| e.to_string())?;
-            let diff_sq = self.builder.build_float_mul(diff, diff, "diff_sq").map_err(|e| e.to_string())?;
-            let current_sq_sum = self.builder.build_load(f64_type, sq_sum, "current_sq_sum").map_err(|e| e.to_string())?.into_float_value();
-            let new_sq_sum = self.builder.build_float_add(current_sq_sum, diff_sq, "new_sq_sum").map_err(|e| e.to_string())?;
-            self.builder.build_store(sq_sum, new_sq_sum).map_err(|e| e.to_string())?;
-            let next_i2 = self.builder.build_int_add(i2, i64_type.const_int(1, false), "next_i2").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_i2).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(var_loop_cond).map_err(|e| e.to_string())?;
+            let elem_ptr2 = self
+                .builder
+                .build_pointer_cast(elem_ptr2, ptr_type, "elem_ptr2_typed")
+                .map_err(|e| e.to_string())?;
+            let elem2 = self
+                .builder
+                .build_load(f64_type, elem_ptr2, "elem2")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let diff = self
+                .builder
+                .build_float_sub(elem2, mean, "diff")
+                .map_err(|e| e.to_string())?;
+            let diff_sq = self
+                .builder
+                .build_float_mul(diff, diff, "diff_sq")
+                .map_err(|e| e.to_string())?;
+            let current_sq_sum = self
+                .builder
+                .build_load(f64_type, sq_sum, "current_sq_sum")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_sq_sum = self
+                .builder
+                .build_float_add(current_sq_sum, diff_sq, "new_sq_sum")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sq_sum, new_sq_sum)
+                .map_err(|e| e.to_string())?;
+            let next_i2 = self
+                .builder
+                .build_int_add(i2, i64_type.const_int(1, false), "next_i2")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_i2)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(var_loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(var_loop_end);
-            let total_sq = self.builder.build_load(f64_type, sq_sum, "total_sq").map_err(|e| e.to_string())?.into_float_value();
-            let variance = self.builder.build_float_div(total_sq, len_float, "variance").map_err(|e| e.to_string())?;
-            self.builder.build_return(Some(&variance)).map_err(|e| e.to_string())?;
+            let total_sq = self
+                .builder
+                .build_load(f64_type, sq_sum, "total_sq")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let variance = self
+                .builder
+                .build_float_div(total_sq, len_float, "variance")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&variance))
+                .map_err(|e| e.to_string())?;
 
             for name in &["variance", "var"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::Float);
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::Float);
             }
         }
 
@@ -2006,28 +2975,43 @@ impl<'ctx> CodeGen<'ctx> {
             let arr = func.get_nth_param(0).unwrap().into_pointer_value();
 
             // Call variance function
-            let variance_fn = self.module.get_function("englang_variance").ok_or("variance not declared")?;
-            let var_result = self.builder.build_call(variance_fn, &[arr.into()], "var_result")
-                .map_err(|e| e.to_string())?.try_as_basic_value();
+            let variance_fn = self
+                .module
+                .get_function("englang_variance")
+                .ok_or("variance not declared")?;
+            let var_result = self
+                .builder
+                .build_call(variance_fn, &[arr.into()], "var_result")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
             let variance = match var_result {
                 ValueKind::Basic(v) => v.into_float_value(),
                 _ => return Err("variance returned void".to_string()),
             };
 
             // sqrt(variance)
-            let c_sqrt = self.module.get_function("sqrt").ok_or("sqrt not declared")?;
-            let result = self.builder.build_call(c_sqrt, &[variance.into()], "stddev")
-                .map_err(|e| e.to_string())?.try_as_basic_value();
+            let c_sqrt = self
+                .module
+                .get_function("sqrt")
+                .ok_or("sqrt not declared")?;
+            let result = self
+                .builder
+                .build_call(c_sqrt, &[variance.into()], "stddev")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
             let stddev = match result {
                 ValueKind::Basic(v) => v.into_float_value(),
                 _ => return Err("sqrt returned void".to_string()),
             };
 
-            self.builder.build_return(Some(&stddev)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&stddev))
+                .map_err(|e| e.to_string())?;
 
             for name in &["standardDeviation", "stdDev", "std"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::Float);
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::Float);
             }
         }
 
@@ -2035,7 +3019,9 @@ impl<'ctx> CodeGen<'ctx> {
         // Pearson correlation coefficient
         {
             let fn_type = f64_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-            let func = self.module.add_function("englang_correlation", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_correlation", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             let loop_cond = self.context.append_basic_block(func, "loop_cond");
             let loop_body = self.context.append_basic_block(func, "loop_body");
@@ -2048,117 +3034,314 @@ impl<'ctx> CodeGen<'ctx> {
             // Get length from x (assume same length)
             let neg_16 = i64_type.const_int((-16i64) as u64, true);
             let len_ptr = unsafe {
-                self.builder.build_gep(i8_type, x_arr, &[neg_16], "len_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, x_arr, &[neg_16], "len_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let len_ptr = self.builder.build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, len_ptr, "len").map_err(|e| e.to_string())?.into_int_value();
+            let len_ptr = self
+                .builder
+                .build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, len_ptr, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
 
             // Allocate accumulators
-            let sum_x = self.builder.build_alloca(f64_type, "sum_x").map_err(|e| e.to_string())?;
-            let sum_y = self.builder.build_alloca(f64_type, "sum_y").map_err(|e| e.to_string())?;
-            let sum_xy = self.builder.build_alloca(f64_type, "sum_xy").map_err(|e| e.to_string())?;
-            let sum_x2 = self.builder.build_alloca(f64_type, "sum_x2").map_err(|e| e.to_string())?;
-            let sum_y2 = self.builder.build_alloca(f64_type, "sum_y2").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_x, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_y, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_xy, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_x2, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_y2, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
+            let sum_x = self
+                .builder
+                .build_alloca(f64_type, "sum_x")
+                .map_err(|e| e.to_string())?;
+            let sum_y = self
+                .builder
+                .build_alloca(f64_type, "sum_y")
+                .map_err(|e| e.to_string())?;
+            let sum_xy = self
+                .builder
+                .build_alloca(f64_type, "sum_xy")
+                .map_err(|e| e.to_string())?;
+            let sum_x2 = self
+                .builder
+                .build_alloca(f64_type, "sum_x2")
+                .map_err(|e| e.to_string())?;
+            let sum_y2 = self
+                .builder
+                .build_alloca(f64_type, "sum_y2")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_x, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_y, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_xy, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_x2, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_y2, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
 
-            let counter = self.builder.build_alloca(i64_type, "counter").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_cond);
-            let i = self.builder.build_load(i64_type, counter, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, loop_body, loop_end).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, loop_body, loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_body);
             let elem_size = i64_type.const_int(8, false);
-            let offset = self.builder.build_int_mul(i, elem_size, "offset").map_err(|e| e.to_string())?;
+            let offset = self
+                .builder
+                .build_int_mul(i, elem_size, "offset")
+                .map_err(|e| e.to_string())?;
 
             // Load x[i]
             let x_ptr = unsafe {
-                self.builder.build_gep(i8_type, x_arr, &[offset], "x_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, x_arr, &[offset], "x_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let x_ptr = self.builder.build_pointer_cast(x_ptr, ptr_type, "x_ptr_typed").map_err(|e| e.to_string())?;
-            let x_val = self.builder.build_load(f64_type, x_ptr, "x_val").map_err(|e| e.to_string())?.into_float_value();
+            let x_ptr = self
+                .builder
+                .build_pointer_cast(x_ptr, ptr_type, "x_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let x_val = self
+                .builder
+                .build_load(f64_type, x_ptr, "x_val")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
 
             // Load y[i]
             let y_ptr = unsafe {
-                self.builder.build_gep(i8_type, y_arr, &[offset], "y_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, y_arr, &[offset], "y_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let y_ptr = self.builder.build_pointer_cast(y_ptr, ptr_type, "y_ptr_typed").map_err(|e| e.to_string())?;
-            let y_val = self.builder.build_load(f64_type, y_ptr, "y_val").map_err(|e| e.to_string())?.into_float_value();
+            let y_ptr = self
+                .builder
+                .build_pointer_cast(y_ptr, ptr_type, "y_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let y_val = self
+                .builder
+                .build_load(f64_type, y_ptr, "y_val")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
 
             // Accumulate sums
-            let cur_sum_x = self.builder.build_load(f64_type, sum_x, "cur_sum_x").map_err(|e| e.to_string())?.into_float_value();
-            let new_sum_x = self.builder.build_float_add(cur_sum_x, x_val, "new_sum_x").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_x, new_sum_x).map_err(|e| e.to_string())?;
+            let cur_sum_x = self
+                .builder
+                .build_load(f64_type, sum_x, "cur_sum_x")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_sum_x = self
+                .builder
+                .build_float_add(cur_sum_x, x_val, "new_sum_x")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_x, new_sum_x)
+                .map_err(|e| e.to_string())?;
 
-            let cur_sum_y = self.builder.build_load(f64_type, sum_y, "cur_sum_y").map_err(|e| e.to_string())?.into_float_value();
-            let new_sum_y = self.builder.build_float_add(cur_sum_y, y_val, "new_sum_y").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_y, new_sum_y).map_err(|e| e.to_string())?;
+            let cur_sum_y = self
+                .builder
+                .build_load(f64_type, sum_y, "cur_sum_y")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_sum_y = self
+                .builder
+                .build_float_add(cur_sum_y, y_val, "new_sum_y")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_y, new_sum_y)
+                .map_err(|e| e.to_string())?;
 
-            let xy = self.builder.build_float_mul(x_val, y_val, "xy").map_err(|e| e.to_string())?;
-            let cur_sum_xy = self.builder.build_load(f64_type, sum_xy, "cur_sum_xy").map_err(|e| e.to_string())?.into_float_value();
-            let new_sum_xy = self.builder.build_float_add(cur_sum_xy, xy, "new_sum_xy").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_xy, new_sum_xy).map_err(|e| e.to_string())?;
+            let xy = self
+                .builder
+                .build_float_mul(x_val, y_val, "xy")
+                .map_err(|e| e.to_string())?;
+            let cur_sum_xy = self
+                .builder
+                .build_load(f64_type, sum_xy, "cur_sum_xy")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_sum_xy = self
+                .builder
+                .build_float_add(cur_sum_xy, xy, "new_sum_xy")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_xy, new_sum_xy)
+                .map_err(|e| e.to_string())?;
 
-            let x2 = self.builder.build_float_mul(x_val, x_val, "x2").map_err(|e| e.to_string())?;
-            let cur_sum_x2 = self.builder.build_load(f64_type, sum_x2, "cur_sum_x2").map_err(|e| e.to_string())?.into_float_value();
-            let new_sum_x2 = self.builder.build_float_add(cur_sum_x2, x2, "new_sum_x2").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_x2, new_sum_x2).map_err(|e| e.to_string())?;
+            let x2 = self
+                .builder
+                .build_float_mul(x_val, x_val, "x2")
+                .map_err(|e| e.to_string())?;
+            let cur_sum_x2 = self
+                .builder
+                .build_load(f64_type, sum_x2, "cur_sum_x2")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_sum_x2 = self
+                .builder
+                .build_float_add(cur_sum_x2, x2, "new_sum_x2")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_x2, new_sum_x2)
+                .map_err(|e| e.to_string())?;
 
-            let y2 = self.builder.build_float_mul(y_val, y_val, "y2").map_err(|e| e.to_string())?;
-            let cur_sum_y2 = self.builder.build_load(f64_type, sum_y2, "cur_sum_y2").map_err(|e| e.to_string())?.into_float_value();
-            let new_sum_y2 = self.builder.build_float_add(cur_sum_y2, y2, "new_sum_y2").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_y2, new_sum_y2).map_err(|e| e.to_string())?;
+            let y2 = self
+                .builder
+                .build_float_mul(y_val, y_val, "y2")
+                .map_err(|e| e.to_string())?;
+            let cur_sum_y2 = self
+                .builder
+                .build_load(f64_type, sum_y2, "cur_sum_y2")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_sum_y2 = self
+                .builder
+                .build_float_add(cur_sum_y2, y2, "new_sum_y2")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_y2, new_sum_y2)
+                .map_err(|e| e.to_string())?;
 
-            let next_i = self.builder.build_int_add(i, i64_type.const_int(1, false), "next_i").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_i).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let next_i = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next_i")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_i)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_end);
-            let n = self.builder.build_signed_int_to_float(len, f64_type, "n").map_err(|e| e.to_string())?;
-            let sx = self.builder.build_load(f64_type, sum_x, "sx").map_err(|e| e.to_string())?.into_float_value();
-            let sy = self.builder.build_load(f64_type, sum_y, "sy").map_err(|e| e.to_string())?.into_float_value();
-            let sxy = self.builder.build_load(f64_type, sum_xy, "sxy").map_err(|e| e.to_string())?.into_float_value();
-            let sx2 = self.builder.build_load(f64_type, sum_x2, "sx2").map_err(|e| e.to_string())?.into_float_value();
-            let sy2 = self.builder.build_load(f64_type, sum_y2, "sy2").map_err(|e| e.to_string())?.into_float_value();
+            let n = self
+                .builder
+                .build_signed_int_to_float(len, f64_type, "n")
+                .map_err(|e| e.to_string())?;
+            let sx = self
+                .builder
+                .build_load(f64_type, sum_x, "sx")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let sy = self
+                .builder
+                .build_load(f64_type, sum_y, "sy")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let sxy = self
+                .builder
+                .build_load(f64_type, sum_xy, "sxy")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let sx2 = self
+                .builder
+                .build_load(f64_type, sum_x2, "sx2")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let sy2 = self
+                .builder
+                .build_load(f64_type, sum_y2, "sy2")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
 
             // numerator = n * sum_xy - sum_x * sum_y
-            let n_sxy = self.builder.build_float_mul(n, sxy, "n_sxy").map_err(|e| e.to_string())?;
-            let sx_sy = self.builder.build_float_mul(sx, sy, "sx_sy").map_err(|e| e.to_string())?;
-            let numerator = self.builder.build_float_sub(n_sxy, sx_sy, "numerator").map_err(|e| e.to_string())?;
+            let n_sxy = self
+                .builder
+                .build_float_mul(n, sxy, "n_sxy")
+                .map_err(|e| e.to_string())?;
+            let sx_sy = self
+                .builder
+                .build_float_mul(sx, sy, "sx_sy")
+                .map_err(|e| e.to_string())?;
+            let numerator = self
+                .builder
+                .build_float_sub(n_sxy, sx_sy, "numerator")
+                .map_err(|e| e.to_string())?;
 
             // denom_x = n * sum_x2 - sum_x^2
-            let n_sx2 = self.builder.build_float_mul(n, sx2, "n_sx2").map_err(|e| e.to_string())?;
-            let sx_sq = self.builder.build_float_mul(sx, sx, "sx_sq").map_err(|e| e.to_string())?;
-            let denom_x = self.builder.build_float_sub(n_sx2, sx_sq, "denom_x").map_err(|e| e.to_string())?;
+            let n_sx2 = self
+                .builder
+                .build_float_mul(n, sx2, "n_sx2")
+                .map_err(|e| e.to_string())?;
+            let sx_sq = self
+                .builder
+                .build_float_mul(sx, sx, "sx_sq")
+                .map_err(|e| e.to_string())?;
+            let denom_x = self
+                .builder
+                .build_float_sub(n_sx2, sx_sq, "denom_x")
+                .map_err(|e| e.to_string())?;
 
             // denom_y = n * sum_y2 - sum_y^2
-            let n_sy2 = self.builder.build_float_mul(n, sy2, "n_sy2").map_err(|e| e.to_string())?;
-            let sy_sq = self.builder.build_float_mul(sy, sy, "sy_sq").map_err(|e| e.to_string())?;
-            let denom_y = self.builder.build_float_sub(n_sy2, sy_sq, "denom_y").map_err(|e| e.to_string())?;
+            let n_sy2 = self
+                .builder
+                .build_float_mul(n, sy2, "n_sy2")
+                .map_err(|e| e.to_string())?;
+            let sy_sq = self
+                .builder
+                .build_float_mul(sy, sy, "sy_sq")
+                .map_err(|e| e.to_string())?;
+            let denom_y = self
+                .builder
+                .build_float_sub(n_sy2, sy_sq, "denom_y")
+                .map_err(|e| e.to_string())?;
 
             // denominator = sqrt(denom_x * denom_y)
-            let denom_prod = self.builder.build_float_mul(denom_x, denom_y, "denom_prod").map_err(|e| e.to_string())?;
-            let c_sqrt = self.module.get_function("sqrt").ok_or("sqrt not declared")?;
-            let denominator = self.builder.build_call(c_sqrt, &[denom_prod.into()], "denominator")
-                .map_err(|e| e.to_string())?.try_as_basic_value();
+            let denom_prod = self
+                .builder
+                .build_float_mul(denom_x, denom_y, "denom_prod")
+                .map_err(|e| e.to_string())?;
+            let c_sqrt = self
+                .module
+                .get_function("sqrt")
+                .ok_or("sqrt not declared")?;
+            let denominator = self
+                .builder
+                .build_call(c_sqrt, &[denom_prod.into()], "denominator")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
             let denominator = match denominator {
                 ValueKind::Basic(v) => v.into_float_value(),
                 _ => return Err("sqrt returned void".to_string()),
             };
 
-            let corr = self.builder.build_float_div(numerator, denominator, "corr").map_err(|e| e.to_string())?;
-            self.builder.build_return(Some(&corr)).map_err(|e| e.to_string())?;
+            let corr = self
+                .builder
+                .build_float_div(numerator, denominator, "corr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&corr))
+                .map_err(|e| e.to_string())?;
 
             for name in &["correlation", "corr"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::Float);
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::Float);
             }
         }
 
@@ -2179,130 +3362,331 @@ impl<'ctx> CodeGen<'ctx> {
             // Get length
             let neg_16 = i64_type.const_int((-16i64) as u64, true);
             let len_ptr = unsafe {
-                self.builder.build_gep(i8_type, x_arr, &[neg_16], "len_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, x_arr, &[neg_16], "len_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let len_ptr = self.builder.build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, len_ptr, "len").map_err(|e| e.to_string())?.into_int_value();
+            let len_ptr = self
+                .builder
+                .build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, len_ptr, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
 
             // Accumulate sums
-            let sum_x = self.builder.build_alloca(f64_type, "sum_x").map_err(|e| e.to_string())?;
-            let sum_y = self.builder.build_alloca(f64_type, "sum_y").map_err(|e| e.to_string())?;
-            let sum_xy = self.builder.build_alloca(f64_type, "sum_xy").map_err(|e| e.to_string())?;
-            let sum_x2 = self.builder.build_alloca(f64_type, "sum_x2").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_x, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_y, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_xy, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_x2, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
+            let sum_x = self
+                .builder
+                .build_alloca(f64_type, "sum_x")
+                .map_err(|e| e.to_string())?;
+            let sum_y = self
+                .builder
+                .build_alloca(f64_type, "sum_y")
+                .map_err(|e| e.to_string())?;
+            let sum_xy = self
+                .builder
+                .build_alloca(f64_type, "sum_xy")
+                .map_err(|e| e.to_string())?;
+            let sum_x2 = self
+                .builder
+                .build_alloca(f64_type, "sum_x2")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_x, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_y, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_xy, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_x2, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
 
-            let counter = self.builder.build_alloca(i64_type, "counter").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_cond);
-            let i = self.builder.build_load(i64_type, counter, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, loop_body, loop_end).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, loop_body, loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_body);
             let elem_size = i64_type.const_int(8, false);
-            let offset = self.builder.build_int_mul(i, elem_size, "offset").map_err(|e| e.to_string())?;
+            let offset = self
+                .builder
+                .build_int_mul(i, elem_size, "offset")
+                .map_err(|e| e.to_string())?;
 
             let x_ptr = unsafe {
-                self.builder.build_gep(i8_type, x_arr, &[offset], "x_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, x_arr, &[offset], "x_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let x_ptr = self.builder.build_pointer_cast(x_ptr, ptr_type, "x_ptr_typed").map_err(|e| e.to_string())?;
-            let x_val = self.builder.build_load(f64_type, x_ptr, "x_val").map_err(|e| e.to_string())?.into_float_value();
+            let x_ptr = self
+                .builder
+                .build_pointer_cast(x_ptr, ptr_type, "x_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let x_val = self
+                .builder
+                .build_load(f64_type, x_ptr, "x_val")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
 
             let y_ptr = unsafe {
-                self.builder.build_gep(i8_type, y_arr, &[offset], "y_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, y_arr, &[offset], "y_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let y_ptr = self.builder.build_pointer_cast(y_ptr, ptr_type, "y_ptr_typed").map_err(|e| e.to_string())?;
-            let y_val = self.builder.build_load(f64_type, y_ptr, "y_val").map_err(|e| e.to_string())?.into_float_value();
+            let y_ptr = self
+                .builder
+                .build_pointer_cast(y_ptr, ptr_type, "y_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let y_val = self
+                .builder
+                .build_load(f64_type, y_ptr, "y_val")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
 
-            let cur_sum_x = self.builder.build_load(f64_type, sum_x, "cur_sum_x").map_err(|e| e.to_string())?.into_float_value();
-            let new_sum_x = self.builder.build_float_add(cur_sum_x, x_val, "new_sum_x").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_x, new_sum_x).map_err(|e| e.to_string())?;
+            let cur_sum_x = self
+                .builder
+                .build_load(f64_type, sum_x, "cur_sum_x")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_sum_x = self
+                .builder
+                .build_float_add(cur_sum_x, x_val, "new_sum_x")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_x, new_sum_x)
+                .map_err(|e| e.to_string())?;
 
-            let cur_sum_y = self.builder.build_load(f64_type, sum_y, "cur_sum_y").map_err(|e| e.to_string())?.into_float_value();
-            let new_sum_y = self.builder.build_float_add(cur_sum_y, y_val, "new_sum_y").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_y, new_sum_y).map_err(|e| e.to_string())?;
+            let cur_sum_y = self
+                .builder
+                .build_load(f64_type, sum_y, "cur_sum_y")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_sum_y = self
+                .builder
+                .build_float_add(cur_sum_y, y_val, "new_sum_y")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_y, new_sum_y)
+                .map_err(|e| e.to_string())?;
 
-            let xy = self.builder.build_float_mul(x_val, y_val, "xy").map_err(|e| e.to_string())?;
-            let cur_sum_xy = self.builder.build_load(f64_type, sum_xy, "cur_sum_xy").map_err(|e| e.to_string())?.into_float_value();
-            let new_sum_xy = self.builder.build_float_add(cur_sum_xy, xy, "new_sum_xy").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_xy, new_sum_xy).map_err(|e| e.to_string())?;
+            let xy = self
+                .builder
+                .build_float_mul(x_val, y_val, "xy")
+                .map_err(|e| e.to_string())?;
+            let cur_sum_xy = self
+                .builder
+                .build_load(f64_type, sum_xy, "cur_sum_xy")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_sum_xy = self
+                .builder
+                .build_float_add(cur_sum_xy, xy, "new_sum_xy")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_xy, new_sum_xy)
+                .map_err(|e| e.to_string())?;
 
-            let x2 = self.builder.build_float_mul(x_val, x_val, "x2").map_err(|e| e.to_string())?;
-            let cur_sum_x2 = self.builder.build_load(f64_type, sum_x2, "cur_sum_x2").map_err(|e| e.to_string())?.into_float_value();
-            let new_sum_x2 = self.builder.build_float_add(cur_sum_x2, x2, "new_sum_x2").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_x2, new_sum_x2).map_err(|e| e.to_string())?;
+            let x2 = self
+                .builder
+                .build_float_mul(x_val, x_val, "x2")
+                .map_err(|e| e.to_string())?;
+            let cur_sum_x2 = self
+                .builder
+                .build_load(f64_type, sum_x2, "cur_sum_x2")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_sum_x2 = self
+                .builder
+                .build_float_add(cur_sum_x2, x2, "new_sum_x2")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_x2, new_sum_x2)
+                .map_err(|e| e.to_string())?;
 
-            let next_i = self.builder.build_int_add(i, i64_type.const_int(1, false), "next_i").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_i).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(loop_cond).map_err(|e| e.to_string())?;
+            let next_i = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next_i")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_i)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(loop_end);
-            let n = self.builder.build_signed_int_to_float(len, f64_type, "n").map_err(|e| e.to_string())?;
-            let sx = self.builder.build_load(f64_type, sum_x, "sx").map_err(|e| e.to_string())?.into_float_value();
-            let sy = self.builder.build_load(f64_type, sum_y, "sy").map_err(|e| e.to_string())?.into_float_value();
-            let sxy = self.builder.build_load(f64_type, sum_xy, "sxy").map_err(|e| e.to_string())?.into_float_value();
-            let sx2 = self.builder.build_load(f64_type, sum_x2, "sx2").map_err(|e| e.to_string())?.into_float_value();
+            let n = self
+                .builder
+                .build_signed_int_to_float(len, f64_type, "n")
+                .map_err(|e| e.to_string())?;
+            let sx = self
+                .builder
+                .build_load(f64_type, sum_x, "sx")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let sy = self
+                .builder
+                .build_load(f64_type, sum_y, "sy")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let sxy = self
+                .builder
+                .build_load(f64_type, sum_xy, "sxy")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let sx2 = self
+                .builder
+                .build_load(f64_type, sum_x2, "sx2")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
 
             // slope = (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x^2)
-            let n_sxy = self.builder.build_float_mul(n, sxy, "n_sxy").map_err(|e| e.to_string())?;
-            let sx_sy = self.builder.build_float_mul(sx, sy, "sx_sy").map_err(|e| e.to_string())?;
-            let numer = self.builder.build_float_sub(n_sxy, sx_sy, "numer").map_err(|e| e.to_string())?;
-            let n_sx2 = self.builder.build_float_mul(n, sx2, "n_sx2").map_err(|e| e.to_string())?;
-            let sx_sq = self.builder.build_float_mul(sx, sx, "sx_sq").map_err(|e| e.to_string())?;
-            let denom = self.builder.build_float_sub(n_sx2, sx_sq, "denom").map_err(|e| e.to_string())?;
-            let slope = self.builder.build_float_div(numer, denom, "slope").map_err(|e| e.to_string())?;
+            let n_sxy = self
+                .builder
+                .build_float_mul(n, sxy, "n_sxy")
+                .map_err(|e| e.to_string())?;
+            let sx_sy = self
+                .builder
+                .build_float_mul(sx, sy, "sx_sy")
+                .map_err(|e| e.to_string())?;
+            let numer = self
+                .builder
+                .build_float_sub(n_sxy, sx_sy, "numer")
+                .map_err(|e| e.to_string())?;
+            let n_sx2 = self
+                .builder
+                .build_float_mul(n, sx2, "n_sx2")
+                .map_err(|e| e.to_string())?;
+            let sx_sq = self
+                .builder
+                .build_float_mul(sx, sx, "sx_sq")
+                .map_err(|e| e.to_string())?;
+            let denom = self
+                .builder
+                .build_float_sub(n_sx2, sx_sq, "denom")
+                .map_err(|e| e.to_string())?;
+            let slope = self
+                .builder
+                .build_float_div(numer, denom, "slope")
+                .map_err(|e| e.to_string())?;
 
             // intercept = (sum_y - slope * sum_x) / n
-            let slope_sx = self.builder.build_float_mul(slope, sx, "slope_sx").map_err(|e| e.to_string())?;
-            let sy_minus = self.builder.build_float_sub(sy, slope_sx, "sy_minus").map_err(|e| e.to_string())?;
-            let intercept = self.builder.build_float_div(sy_minus, n, "intercept").map_err(|e| e.to_string())?;
+            let slope_sx = self
+                .builder
+                .build_float_mul(slope, sx, "slope_sx")
+                .map_err(|e| e.to_string())?;
+            let sy_minus = self
+                .builder
+                .build_float_sub(sy, slope_sx, "sy_minus")
+                .map_err(|e| e.to_string())?;
+            let intercept = self
+                .builder
+                .build_float_div(sy_minus, n, "intercept")
+                .map_err(|e| e.to_string())?;
 
             // Allocate result array [slope, intercept]
             let header_size = i64_type.const_int(16, false);
             let elem_size_const = i64_type.const_int(8, false);
             let data_size = i64_type.const_int(16, false); // 2 * 8
-            let total_size = self.builder.build_int_add(header_size, data_size, "total_size").map_err(|e| e.to_string())?;
-            let base_ptr = self.builder.build_call(malloc, &[total_size.into()], "base_ptr")
-                .map_err(|e| e.to_string())?.try_as_basic_value();
+            let total_size = self
+                .builder
+                .build_int_add(header_size, data_size, "total_size")
+                .map_err(|e| e.to_string())?;
+            let base_ptr = self
+                .builder
+                .build_call(malloc, &[total_size.into()], "base_ptr")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
             let base_ptr = match base_ptr {
                 ValueKind::Basic(v) => v.into_pointer_value(),
                 _ => return Err("malloc returned void".to_string()),
             };
 
             // Store length = 2
-            self.builder.build_store(base_ptr, i64_type.const_int(2, false)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(base_ptr, i64_type.const_int(2, false))
+                .map_err(|e| e.to_string())?;
             let cap_ptr = unsafe {
-                self.builder.build_gep(i8_type, base_ptr, &[i64_type.const_int(8, false)], "cap_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(
+                        i8_type,
+                        base_ptr,
+                        &[i64_type.const_int(8, false)],
+                        "cap_ptr",
+                    )
+                    .map_err(|e| e.to_string())?
             };
-            let cap_ptr = self.builder.build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(cap_ptr, i64_type.const_int(2, false)).map_err(|e| e.to_string())?;
+            let cap_ptr = self
+                .builder
+                .build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cap_ptr, i64_type.const_int(2, false))
+                .map_err(|e| e.to_string())?;
 
             // Data pointer
             let data_ptr = unsafe {
-                self.builder.build_gep(i8_type, base_ptr, &[header_size], "data_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, base_ptr, &[header_size], "data_ptr")
+                    .map_err(|e| e.to_string())?
             };
 
             // Store slope at offset 0
-            let slope_ptr = self.builder.build_pointer_cast(data_ptr, ptr_type, "slope_ptr").map_err(|e| e.to_string())?;
-            self.builder.build_store(slope_ptr, slope).map_err(|e| e.to_string())?;
+            let slope_ptr = self
+                .builder
+                .build_pointer_cast(data_ptr, ptr_type, "slope_ptr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(slope_ptr, slope)
+                .map_err(|e| e.to_string())?;
 
             // Store intercept at offset 8
             let intercept_ptr = unsafe {
-                self.builder.build_gep(i8_type, data_ptr, &[elem_size_const], "intercept_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, data_ptr, &[elem_size_const], "intercept_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let intercept_ptr = self.builder.build_pointer_cast(intercept_ptr, ptr_type, "intercept_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(intercept_ptr, intercept).map_err(|e| e.to_string())?;
+            let intercept_ptr = self
+                .builder
+                .build_pointer_cast(intercept_ptr, ptr_type, "intercept_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(intercept_ptr, intercept)
+                .map_err(|e| e.to_string())?;
 
-            self.builder.build_return(Some(&data_ptr)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&data_ptr))
+                .map_err(|e| e.to_string())?;
 
             for name in &["fitLine", "linearRegression"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::List(Box::new(Type::Float)));
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::List(Box::new(Type::Float)));
             }
         }
 
@@ -2310,7 +3694,9 @@ impl<'ctx> CodeGen<'ctx> {
         // Returns slope * x + intercept
         {
             let fn_type = f64_type.fn_type(&[ptr_type.into(), f64_type.into()], false);
-            let func = self.module.add_function("englang_predictLinear", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_predictLinear", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             self.builder.position_at_end(entry);
 
@@ -2318,25 +3704,51 @@ impl<'ctx> CodeGen<'ctx> {
             let x = func.get_nth_param(1).unwrap().into_float_value();
 
             // Load slope (at offset 0)
-            let slope_ptr = self.builder.build_pointer_cast(coeffs, ptr_type, "slope_ptr").map_err(|e| e.to_string())?;
-            let slope = self.builder.build_load(f64_type, slope_ptr, "slope").map_err(|e| e.to_string())?.into_float_value();
+            let slope_ptr = self
+                .builder
+                .build_pointer_cast(coeffs, ptr_type, "slope_ptr")
+                .map_err(|e| e.to_string())?;
+            let slope = self
+                .builder
+                .build_load(f64_type, slope_ptr, "slope")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
 
             // Load intercept (at offset 8)
             let elem_size = i64_type.const_int(8, false);
             let intercept_ptr = unsafe {
-                self.builder.build_gep(i8_type, coeffs, &[elem_size], "intercept_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, coeffs, &[elem_size], "intercept_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let intercept_ptr = self.builder.build_pointer_cast(intercept_ptr, ptr_type, "intercept_ptr_typed").map_err(|e| e.to_string())?;
-            let intercept = self.builder.build_load(f64_type, intercept_ptr, "intercept").map_err(|e| e.to_string())?.into_float_value();
+            let intercept_ptr = self
+                .builder
+                .build_pointer_cast(intercept_ptr, ptr_type, "intercept_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let intercept = self
+                .builder
+                .build_load(f64_type, intercept_ptr, "intercept")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
 
             // result = slope * x + intercept
-            let slope_x = self.builder.build_float_mul(slope, x, "slope_x").map_err(|e| e.to_string())?;
-            let result = self.builder.build_float_add(slope_x, intercept, "result").map_err(|e| e.to_string())?;
+            let slope_x = self
+                .builder
+                .build_float_mul(slope, x, "slope_x")
+                .map_err(|e| e.to_string())?;
+            let result = self
+                .builder
+                .build_float_add(slope_x, intercept, "result")
+                .map_err(|e| e.to_string())?;
 
-            self.builder.build_return(Some(&result)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&result))
+                .map_err(|e| e.to_string())?;
 
-            self.builtin_functions.insert("predictLinear".to_string(), func);
-            self.builtin_return_types.insert("predictLinear".to_string(), Type::Float);
+            self.builtin_functions
+                .insert("predictLinear".to_string(), func);
+            self.builtin_return_types
+                .insert("predictLinear".to_string(), Type::Float);
         }
 
         // --- kMeans(data: ptr, k: i64) -> ptr (cluster assignments) ---
@@ -2354,9 +3766,6 @@ impl<'ctx> CodeGen<'ctx> {
             let assign_loop_cond = self.context.append_basic_block(func, "assign_loop_cond");
             let assign_loop_body = self.context.append_basic_block(func, "assign_loop_body");
             let assign_loop_end = self.context.append_basic_block(func, "assign_loop_end");
-            let update_loop_cond = self.context.append_basic_block(func, "update_loop_cond");
-            let update_loop_body = self.context.append_basic_block(func, "update_loop_body");
-            let update_loop_end = self.context.append_basic_block(func, "update_loop_end");
             self.builder.position_at_end(entry);
 
             let data = func.get_nth_param(0).unwrap().into_pointer_value();
@@ -2365,15 +3774,30 @@ impl<'ctx> CodeGen<'ctx> {
             // Get data length
             let neg_16 = i64_type.const_int((-16i64) as u64, true);
             let len_ptr = unsafe {
-                self.builder.build_gep(i8_type, data, &[neg_16], "len_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, data, &[neg_16], "len_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let len_ptr = self.builder.build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed").map_err(|e| e.to_string())?;
-            let n = self.builder.build_load(i64_type, len_ptr, "n").map_err(|e| e.to_string())?.into_int_value();
+            let len_ptr = self
+                .builder
+                .build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let n = self
+                .builder
+                .build_load(i64_type, len_ptr, "n")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
 
             // Allocate centroids array (k floats)
-            let k_times_8 = self.builder.build_int_mul(k, i64_type.const_int(8, false), "k_times_8").map_err(|e| e.to_string())?;
-            let centroids = self.builder.build_call(malloc, &[k_times_8.into()], "centroids")
-                .map_err(|e| e.to_string())?.try_as_basic_value();
+            let k_times_8 = self
+                .builder
+                .build_int_mul(k, i64_type.const_int(8, false), "k_times_8")
+                .map_err(|e| e.to_string())?;
+            let centroids = self
+                .builder
+                .build_call(malloc, &[k_times_8.into()], "centroids")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
             let centroids = match centroids {
                 ValueKind::Basic(v) => v.into_pointer_value(),
                 _ => return Err("malloc returned void".to_string()),
@@ -2381,151 +3805,325 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Allocate assignments array (header + n ints)
             let header_size = i64_type.const_int(16, false);
-            let n_times_8 = self.builder.build_int_mul(n, i64_type.const_int(8, false), "n_times_8").map_err(|e| e.to_string())?;
-            let assign_total = self.builder.build_int_add(header_size, n_times_8, "assign_total").map_err(|e| e.to_string())?;
-            let assign_base = self.builder.build_call(malloc, &[assign_total.into()], "assign_base")
-                .map_err(|e| e.to_string())?.try_as_basic_value();
+            let n_times_8 = self
+                .builder
+                .build_int_mul(n, i64_type.const_int(8, false), "n_times_8")
+                .map_err(|e| e.to_string())?;
+            let assign_total = self
+                .builder
+                .build_int_add(header_size, n_times_8, "assign_total")
+                .map_err(|e| e.to_string())?;
+            let assign_base = self
+                .builder
+                .build_call(malloc, &[assign_total.into()], "assign_base")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
             let assign_base = match assign_base {
                 ValueKind::Basic(v) => v.into_pointer_value(),
                 _ => return Err("malloc returned void".to_string()),
             };
 
             // Store length in assignments header
-            self.builder.build_store(assign_base, n).map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(assign_base, n)
+                .map_err(|e| e.to_string())?;
             let cap_ptr = unsafe {
-                self.builder.build_gep(i8_type, assign_base, &[i64_type.const_int(8, false)], "cap_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(
+                        i8_type,
+                        assign_base,
+                        &[i64_type.const_int(8, false)],
+                        "cap_ptr",
+                    )
+                    .map_err(|e| e.to_string())?
             };
-            let cap_ptr = self.builder.build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(cap_ptr, n).map_err(|e| e.to_string())?;
+            let cap_ptr = self
+                .builder
+                .build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cap_ptr, n)
+                .map_err(|e| e.to_string())?;
             let assignments = unsafe {
-                self.builder.build_gep(i8_type, assign_base, &[header_size], "assignments").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, assign_base, &[header_size], "assignments")
+                    .map_err(|e| e.to_string())?
             };
 
             // Initialize centroids with first k data points
-            let counter = self.builder.build_alloca(i64_type, "counter").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(init_loop_cond).map_err(|e| e.to_string())?;
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(init_loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(init_loop_cond);
-            let i = self.builder.build_load(i64_type, counter, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, k, "cond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, init_loop_body, init_loop_end).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, k, "cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, init_loop_body, init_loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(init_loop_body);
             let elem_size = i64_type.const_int(8, false);
-            let offset = self.builder.build_int_mul(i, elem_size, "offset").map_err(|e| e.to_string())?;
+            let offset = self
+                .builder
+                .build_int_mul(i, elem_size, "offset")
+                .map_err(|e| e.to_string())?;
             let data_ptr = unsafe {
-                self.builder.build_gep(i8_type, data, &[offset], "data_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, data, &[offset], "data_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let data_ptr = self.builder.build_pointer_cast(data_ptr, ptr_type, "data_ptr_typed").map_err(|e| e.to_string())?;
-            let val = self.builder.build_load(f64_type, data_ptr, "val").map_err(|e| e.to_string())?;
+            let data_ptr = self
+                .builder
+                .build_pointer_cast(data_ptr, ptr_type, "data_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let val = self
+                .builder
+                .build_load(f64_type, data_ptr, "val")
+                .map_err(|e| e.to_string())?;
             let cent_ptr = unsafe {
-                self.builder.build_gep(i8_type, centroids, &[offset], "cent_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, centroids, &[offset], "cent_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let cent_ptr = self.builder.build_pointer_cast(cent_ptr, ptr_type, "cent_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(cent_ptr, val).map_err(|e| e.to_string())?;
-            let next_i = self.builder.build_int_add(i, i64_type.const_int(1, false), "next_i").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_i).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(init_loop_cond).map_err(|e| e.to_string())?;
+            let cent_ptr = self
+                .builder
+                .build_pointer_cast(cent_ptr, ptr_type, "cent_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cent_ptr, val)
+                .map_err(|e| e.to_string())?;
+            let next_i = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next_i")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_i)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(init_loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(init_loop_end);
 
             // Main iteration loop (10 iterations for simplicity)
-            let iter_counter = self.builder.build_alloca(i64_type, "iter_counter").map_err(|e| e.to_string())?;
-            self.builder.build_store(iter_counter, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(iter_loop_cond).map_err(|e| e.to_string())?;
+            let iter_counter = self
+                .builder
+                .build_alloca(i64_type, "iter_counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(iter_counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(iter_loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(iter_loop_cond);
-            let iter = self.builder.build_load(i64_type, iter_counter, "iter").map_err(|e| e.to_string())?.into_int_value();
+            let iter = self
+                .builder
+                .build_load(i64_type, iter_counter, "iter")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
             let max_iter = i64_type.const_int(10, false);
-            let iter_cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, iter, max_iter, "iter_cond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(iter_cond, iter_loop_body, iter_loop_end).map_err(|e| e.to_string())?;
+            let iter_cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, iter, max_iter, "iter_cond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(iter_cond, iter_loop_body, iter_loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(iter_loop_body);
 
             // Assignment step: assign each point to nearest centroid
-            self.builder.build_store(counter, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(assign_loop_cond).map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(assign_loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(assign_loop_cond);
-            let ai = self.builder.build_load(i64_type, counter, "ai").map_err(|e| e.to_string())?.into_int_value();
-            let acond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, ai, n, "acond").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(acond, assign_loop_body, assign_loop_end).map_err(|e| e.to_string())?;
+            let ai = self
+                .builder
+                .build_load(i64_type, counter, "ai")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let acond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, ai, n, "acond")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(acond, assign_loop_body, assign_loop_end)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(assign_loop_body);
             // Get data point
-            let a_offset = self.builder.build_int_mul(ai, elem_size, "a_offset").map_err(|e| e.to_string())?;
+            let a_offset = self
+                .builder
+                .build_int_mul(ai, elem_size, "a_offset")
+                .map_err(|e| e.to_string())?;
             let dp_ptr = unsafe {
-                self.builder.build_gep(i8_type, data, &[a_offset], "dp_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, data, &[a_offset], "dp_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let dp_ptr = self.builder.build_pointer_cast(dp_ptr, ptr_type, "dp_ptr_typed").map_err(|e| e.to_string())?;
-            let point = self.builder.build_load(f64_type, dp_ptr, "point").map_err(|e| e.to_string())?.into_float_value();
+            let dp_ptr = self
+                .builder
+                .build_pointer_cast(dp_ptr, ptr_type, "dp_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let point = self
+                .builder
+                .build_load(f64_type, dp_ptr, "point")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
 
             // Find nearest centroid (simplified: just use centroid 0 or 1 based on distance)
             // For simplicity, compare to first centroid
-            let c0_ptr = self.builder.build_pointer_cast(centroids, ptr_type, "c0_ptr").map_err(|e| e.to_string())?;
-            let c0 = self.builder.build_load(f64_type, c0_ptr, "c0").map_err(|e| e.to_string())?.into_float_value();
-            let diff0 = self.builder.build_float_sub(point, c0, "diff0").map_err(|e| e.to_string())?;
-            let fabs = self.module.get_function("fabs").ok_or("fabs not declared")?;
-            let dist0 = self.builder.build_call(fabs, &[diff0.into()], "dist0")
-                .map_err(|e| e.to_string())?.try_as_basic_value();
+            let c0_ptr = self
+                .builder
+                .build_pointer_cast(centroids, ptr_type, "c0_ptr")
+                .map_err(|e| e.to_string())?;
+            let c0 = self
+                .builder
+                .build_load(f64_type, c0_ptr, "c0")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let diff0 = self
+                .builder
+                .build_float_sub(point, c0, "diff0")
+                .map_err(|e| e.to_string())?;
+            let fabs = self
+                .module
+                .get_function("fabs")
+                .ok_or("fabs not declared")?;
+            let dist0 = self
+                .builder
+                .build_call(fabs, &[diff0.into()], "dist0")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
             let dist0 = match dist0 {
                 ValueKind::Basic(v) => v.into_float_value(),
                 _ => return Err("fabs returned void".to_string()),
             };
 
             // Simple assignment: cluster 0 if closer to first centroid, else cluster (k-1)
-            let c_last_offset = self.builder.build_int_mul(
-                self.builder.build_int_sub(k, i64_type.const_int(1, false), "k_minus_1").map_err(|e| e.to_string())?,
-                elem_size, "c_last_offset"
-            ).map_err(|e| e.to_string())?;
+            let c_last_offset = self
+                .builder
+                .build_int_mul(
+                    self.builder
+                        .build_int_sub(k, i64_type.const_int(1, false), "k_minus_1")
+                        .map_err(|e| e.to_string())?,
+                    elem_size,
+                    "c_last_offset",
+                )
+                .map_err(|e| e.to_string())?;
             let c_last_ptr = unsafe {
-                self.builder.build_gep(i8_type, centroids, &[c_last_offset], "c_last_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, centroids, &[c_last_offset], "c_last_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let c_last_ptr = self.builder.build_pointer_cast(c_last_ptr, ptr_type, "c_last_ptr_typed").map_err(|e| e.to_string())?;
-            let c_last = self.builder.build_load(f64_type, c_last_ptr, "c_last").map_err(|e| e.to_string())?.into_float_value();
-            let diff_last = self.builder.build_float_sub(point, c_last, "diff_last").map_err(|e| e.to_string())?;
-            let dist_last = self.builder.build_call(fabs, &[diff_last.into()], "dist_last")
-                .map_err(|e| e.to_string())?.try_as_basic_value();
+            let c_last_ptr = self
+                .builder
+                .build_pointer_cast(c_last_ptr, ptr_type, "c_last_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            let c_last = self
+                .builder
+                .build_load(f64_type, c_last_ptr, "c_last")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let diff_last = self
+                .builder
+                .build_float_sub(point, c_last, "diff_last")
+                .map_err(|e| e.to_string())?;
+            let dist_last = self
+                .builder
+                .build_call(fabs, &[diff_last.into()], "dist_last")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
             let dist_last = match dist_last {
                 ValueKind::Basic(v) => v.into_float_value(),
                 _ => return Err("fabs returned void".to_string()),
             };
 
-            let is_closer_to_first = self.builder.build_float_compare(
-                inkwell::FloatPredicate::OLT, dist0, dist_last, "is_closer"
-            ).map_err(|e| e.to_string())?;
-            let cluster = self.builder.build_select(
-                is_closer_to_first,
-                i64_type.const_int(0, false),
-                self.builder.build_int_sub(k, i64_type.const_int(1, false), "k_1").map_err(|e| e.to_string())?,
-                "cluster"
-            ).map_err(|e| e.to_string())?;
+            let is_closer_to_first = self
+                .builder
+                .build_float_compare(inkwell::FloatPredicate::OLT, dist0, dist_last, "is_closer")
+                .map_err(|e| e.to_string())?;
+            let cluster = self
+                .builder
+                .build_select(
+                    is_closer_to_first,
+                    i64_type.const_int(0, false),
+                    self.builder
+                        .build_int_sub(k, i64_type.const_int(1, false), "k_1")
+                        .map_err(|e| e.to_string())?,
+                    "cluster",
+                )
+                .map_err(|e| e.to_string())?;
 
             // Store assignment
             let assign_ptr = unsafe {
-                self.builder.build_gep(i8_type, assignments, &[a_offset], "assign_ptr").map_err(|e| e.to_string())?
+                self.builder
+                    .build_gep(i8_type, assignments, &[a_offset], "assign_ptr")
+                    .map_err(|e| e.to_string())?
             };
-            let assign_ptr = self.builder.build_pointer_cast(assign_ptr, ptr_type, "assign_ptr_typed").map_err(|e| e.to_string())?;
-            self.builder.build_store(assign_ptr, cluster).map_err(|e| e.to_string())?;
+            let assign_ptr = self
+                .builder
+                .build_pointer_cast(assign_ptr, ptr_type, "assign_ptr_typed")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(assign_ptr, cluster)
+                .map_err(|e| e.to_string())?;
 
-            let next_ai = self.builder.build_int_add(ai, i64_type.const_int(1, false), "next_ai").map_err(|e| e.to_string())?;
-            self.builder.build_store(counter, next_ai).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(assign_loop_cond).map_err(|e| e.to_string())?;
+            let next_ai = self
+                .builder
+                .build_int_add(ai, i64_type.const_int(1, false), "next_ai")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next_ai)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(assign_loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(assign_loop_end);
             // Skip update step for simplicity (would need per-cluster sum/count)
 
-            let next_iter = self.builder.build_int_add(iter, i64_type.const_int(1, false), "next_iter").map_err(|e| e.to_string())?;
-            self.builder.build_store(iter_counter, next_iter).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(iter_loop_cond).map_err(|e| e.to_string())?;
+            let next_iter = self
+                .builder
+                .build_int_add(iter, i64_type.const_int(1, false), "next_iter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(iter_counter, next_iter)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(iter_loop_cond)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(iter_loop_end);
-            self.builder.build_return(Some(&assignments)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&assignments))
+                .map_err(|e| e.to_string())?;
 
             for name in &["kMeans", "cluster"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::List(Box::new(Type::Int)));
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::List(Box::new(Type::Int)));
             }
         }
 
@@ -2533,10 +4131,19 @@ impl<'ctx> CodeGen<'ctx> {
 
         let c_exp = self.module.get_function("exp").ok_or("exp not declared")?;
         let c_log = self.module.get_function("log").ok_or("log not declared")?;
-        let c_sqrt = self.module.get_function("sqrt").ok_or("sqrt not declared")?;
+        let c_sqrt = self
+            .module
+            .get_function("sqrt")
+            .ok_or("sqrt not declared")?;
         let c_cos = self.module.get_function("cos").ok_or("cos not declared")?;
-        let c_fmax = self.module.get_function("fmax").ok_or("fmax not declared")?;
-        let c_rand = self.module.get_function("rand").ok_or("rand not declared")?;
+        let c_fmax = self
+            .module
+            .get_function("fmax")
+            .ok_or("fmax not declared")?;
+        let c_rand = self
+            .module
+            .get_function("rand")
+            .ok_or("rand not declared")?;
 
         // Helper macro-like closure: given a data ptr, load its length (at ptr - 16)
         // We inline this pattern in each function below.
@@ -2544,27 +4151,44 @@ impl<'ctx> CodeGen<'ctx> {
         // --- vectorLength(vec: ptr) -> i64 ---
         {
             let fn_type = i64_type.fn_type(&[ptr_type.into()], false);
-            let func = self.module.add_function("englang_vectorLength", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_vectorLength", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             self.builder.position_at_end(entry);
 
             let arr = func.get_nth_param(0).unwrap().into_pointer_value();
             let neg16 = i64_type.const_int((-16i64) as u64, true);
-            let len_ptr = unsafe { self.builder.build_gep(i8_type, arr, &[neg16], "lp").map_err(|e| e.to_string())? };
-            let len_ptr = self.builder.build_pointer_cast(len_ptr, ptr_type, "lpt").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, len_ptr, "len").map_err(|e| e.to_string())?;
-            self.builder.build_return(Some(&len)).map_err(|e| e.to_string())?;
+            let len_ptr = unsafe {
+                self.builder
+                    .build_gep(i8_type, arr, &[neg16], "lp")
+                    .map_err(|e| e.to_string())?
+            };
+            let len_ptr = self
+                .builder
+                .build_pointer_cast(len_ptr, ptr_type, "lpt")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, len_ptr, "len")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&len))
+                .map_err(|e| e.to_string())?;
 
             for name in &["vectorLength", "vecLen"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::Int);
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::Int);
             }
         }
 
         // --- dotProduct(a: ptr, b: ptr) -> f64 ---
         {
             let fn_type = f64_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-            let func = self.module.add_function("englang_dotProduct", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_dotProduct", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             let lc = self.context.append_basic_block(func, "lc");
             let lb = self.context.append_basic_block(func, "lb");
@@ -2574,44 +4198,126 @@ impl<'ctx> CodeGen<'ctx> {
             let a = func.get_nth_param(0).unwrap().into_pointer_value();
             let b = func.get_nth_param(1).unwrap().into_pointer_value();
             let neg16 = i64_type.const_int((-16i64) as u64, true);
-            let lp = unsafe { self.builder.build_gep(i8_type, a, &[neg16], "lp").map_err(|e| e.to_string())? };
-            let lp = self.builder.build_pointer_cast(lp, ptr_type, "lpt").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, lp, "len").map_err(|e| e.to_string())?.into_int_value();
-            let acc = self.builder.build_alloca(f64_type, "acc").map_err(|e| e.to_string())?;
-            self.builder.build_store(acc, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
-            let ctr = self.builder.build_alloca(i64_type, "ctr").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let lp = unsafe {
+                self.builder
+                    .build_gep(i8_type, a, &[neg16], "lp")
+                    .map_err(|e| e.to_string())?
+            };
+            let lp = self
+                .builder
+                .build_pointer_cast(lp, ptr_type, "lpt")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, lp, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let acc = self
+                .builder
+                .build_alloca(f64_type, "acc")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(acc, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
+            let ctr = self
+                .builder
+                .build_alloca(i64_type, "ctr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lc);
-            let i = self.builder.build_load(i64_type, ctr, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "c").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, lb, le).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, ctr, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "c")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, lb, le)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lb);
             let esz = i64_type.const_int(8, false);
-            let off = self.builder.build_int_mul(i, esz, "off").map_err(|e| e.to_string())?;
-            let ap = unsafe { self.builder.build_gep(i8_type, a, &[off], "ap").map_err(|e| e.to_string())? };
-            let ap = self.builder.build_pointer_cast(ap, ptr_type, "apt").map_err(|e| e.to_string())?;
-            let av = self.builder.build_load(f64_type, ap, "av").map_err(|e| e.to_string())?.into_float_value();
-            let bp = unsafe { self.builder.build_gep(i8_type, b, &[off], "bp").map_err(|e| e.to_string())? };
-            let bp = self.builder.build_pointer_cast(bp, ptr_type, "bpt").map_err(|e| e.to_string())?;
-            let bv = self.builder.build_load(f64_type, bp, "bv").map_err(|e| e.to_string())?.into_float_value();
-            let prod = self.builder.build_float_mul(av, bv, "prod").map_err(|e| e.to_string())?;
-            let cur = self.builder.build_load(f64_type, acc, "cur").map_err(|e| e.to_string())?.into_float_value();
-            let nxt = self.builder.build_float_add(cur, prod, "nxt").map_err(|e| e.to_string())?;
-            self.builder.build_store(acc, nxt).map_err(|e| e.to_string())?;
-            let ni = self.builder.build_int_add(i, i64_type.const_int(1, false), "ni").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, ni).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let off = self
+                .builder
+                .build_int_mul(i, esz, "off")
+                .map_err(|e| e.to_string())?;
+            let ap = unsafe {
+                self.builder
+                    .build_gep(i8_type, a, &[off], "ap")
+                    .map_err(|e| e.to_string())?
+            };
+            let ap = self
+                .builder
+                .build_pointer_cast(ap, ptr_type, "apt")
+                .map_err(|e| e.to_string())?;
+            let av = self
+                .builder
+                .build_load(f64_type, ap, "av")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let bp = unsafe {
+                self.builder
+                    .build_gep(i8_type, b, &[off], "bp")
+                    .map_err(|e| e.to_string())?
+            };
+            let bp = self
+                .builder
+                .build_pointer_cast(bp, ptr_type, "bpt")
+                .map_err(|e| e.to_string())?;
+            let bv = self
+                .builder
+                .build_load(f64_type, bp, "bv")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let prod = self
+                .builder
+                .build_float_mul(av, bv, "prod")
+                .map_err(|e| e.to_string())?;
+            let cur = self
+                .builder
+                .build_load(f64_type, acc, "cur")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let nxt = self
+                .builder
+                .build_float_add(cur, prod, "nxt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(acc, nxt)
+                .map_err(|e| e.to_string())?;
+            let ni = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "ni")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, ni)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(le);
-            let res = self.builder.build_load(f64_type, acc, "res").map_err(|e| e.to_string())?;
-            self.builder.build_return(Some(&res)).map_err(|e| e.to_string())?;
+            let res = self
+                .builder
+                .build_load(f64_type, acc, "res")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&res))
+                .map_err(|e| e.to_string())?;
 
             for name in &["dotProduct", "dot"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::Float);
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::Float);
             }
         }
 
@@ -2621,7 +4327,9 @@ impl<'ctx> CodeGen<'ctx> {
         // --- addVectors(a: ptr, b: ptr) -> ptr ---
         {
             let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-            let func = self.module.add_function("englang_addVectors", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_addVectors", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             let lc = self.context.append_basic_block(func, "lc");
             let lb = self.context.append_basic_block(func, "lb");
@@ -2631,58 +4339,162 @@ impl<'ctx> CodeGen<'ctx> {
             let a = func.get_nth_param(0).unwrap().into_pointer_value();
             let b = func.get_nth_param(1).unwrap().into_pointer_value();
             let neg16 = i64_type.const_int((-16i64) as u64, true);
-            let lp = unsafe { self.builder.build_gep(i8_type, a, &[neg16], "lp").map_err(|e| e.to_string())? };
-            let lp = self.builder.build_pointer_cast(lp, ptr_type, "lpt").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, lp, "len").map_err(|e| e.to_string())?.into_int_value();
+            let lp = unsafe {
+                self.builder
+                    .build_gep(i8_type, a, &[neg16], "lp")
+                    .map_err(|e| e.to_string())?
+            };
+            let lp = self
+                .builder
+                .build_pointer_cast(lp, ptr_type, "lpt")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, lp, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
             let hdr = i64_type.const_int(16, false);
             let esz = i64_type.const_int(8, false);
-            let dsz = self.builder.build_int_mul(len, esz, "dsz").map_err(|e| e.to_string())?;
-            let tsz = self.builder.build_int_add(hdr, dsz, "tsz").map_err(|e| e.to_string())?;
-            let base = self.builder.build_call(malloc, &[tsz.into()], "base").map_err(|e| e.to_string())?.try_as_basic_value();
-            let base = match base { ValueKind::Basic(v) => v.into_pointer_value(), _ => return Err("malloc void".to_string()) };
-            self.builder.build_store(base, len).map_err(|e| e.to_string())?;
-            let cp = unsafe { self.builder.build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp").map_err(|e| e.to_string())? };
-            let cp = self.builder.build_pointer_cast(cp, ptr_type, "cpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(cp, len).map_err(|e| e.to_string())?;
-            let data = unsafe { self.builder.build_gep(i8_type, base, &[hdr], "data").map_err(|e| e.to_string())? };
-            let ctr = self.builder.build_alloca(i64_type, "ctr").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let dsz = self
+                .builder
+                .build_int_mul(len, esz, "dsz")
+                .map_err(|e| e.to_string())?;
+            let tsz = self
+                .builder
+                .build_int_add(hdr, dsz, "tsz")
+                .map_err(|e| e.to_string())?;
+            let base = self
+                .builder
+                .build_call(malloc, &[tsz.into()], "base")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let base = match base {
+                ValueKind::Basic(v) => v.into_pointer_value(),
+                _ => return Err("malloc void".to_string()),
+            };
+            self.builder
+                .build_store(base, len)
+                .map_err(|e| e.to_string())?;
+            let cp = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp")
+                    .map_err(|e| e.to_string())?
+            };
+            let cp = self
+                .builder
+                .build_pointer_cast(cp, ptr_type, "cpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cp, len)
+                .map_err(|e| e.to_string())?;
+            let data = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[hdr], "data")
+                    .map_err(|e| e.to_string())?
+            };
+            let ctr = self
+                .builder
+                .build_alloca(i64_type, "ctr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lc);
-            let i = self.builder.build_load(i64_type, ctr, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "c").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, lb, le).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, ctr, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "c")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, lb, le)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lb);
-            let off = self.builder.build_int_mul(i, esz, "off").map_err(|e| e.to_string())?;
-            let ap = unsafe { self.builder.build_gep(i8_type, a, &[off], "ap").map_err(|e| e.to_string())? };
-            let ap = self.builder.build_pointer_cast(ap, ptr_type, "apt").map_err(|e| e.to_string())?;
-            let av = self.builder.build_load(f64_type, ap, "av").map_err(|e| e.to_string())?.into_float_value();
-            let bp = unsafe { self.builder.build_gep(i8_type, b, &[off], "bp").map_err(|e| e.to_string())? };
-            let bp = self.builder.build_pointer_cast(bp, ptr_type, "bpt").map_err(|e| e.to_string())?;
-            let bv = self.builder.build_load(f64_type, bp, "bv").map_err(|e| e.to_string())?.into_float_value();
-            let rv = self.builder.build_float_add(av, bv, "rv").map_err(|e| e.to_string())?;
-            let dp = unsafe { self.builder.build_gep(i8_type, data, &[off], "dp").map_err(|e| e.to_string())? };
-            let dp = self.builder.build_pointer_cast(dp, ptr_type, "dpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(dp, rv).map_err(|e| e.to_string())?;
-            let ni = self.builder.build_int_add(i, i64_type.const_int(1, false), "ni").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, ni).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let off = self
+                .builder
+                .build_int_mul(i, esz, "off")
+                .map_err(|e| e.to_string())?;
+            let ap = unsafe {
+                self.builder
+                    .build_gep(i8_type, a, &[off], "ap")
+                    .map_err(|e| e.to_string())?
+            };
+            let ap = self
+                .builder
+                .build_pointer_cast(ap, ptr_type, "apt")
+                .map_err(|e| e.to_string())?;
+            let av = self
+                .builder
+                .build_load(f64_type, ap, "av")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let bp = unsafe {
+                self.builder
+                    .build_gep(i8_type, b, &[off], "bp")
+                    .map_err(|e| e.to_string())?
+            };
+            let bp = self
+                .builder
+                .build_pointer_cast(bp, ptr_type, "bpt")
+                .map_err(|e| e.to_string())?;
+            let bv = self
+                .builder
+                .build_load(f64_type, bp, "bv")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let rv = self
+                .builder
+                .build_float_add(av, bv, "rv")
+                .map_err(|e| e.to_string())?;
+            let dp = unsafe {
+                self.builder
+                    .build_gep(i8_type, data, &[off], "dp")
+                    .map_err(|e| e.to_string())?
+            };
+            let dp = self
+                .builder
+                .build_pointer_cast(dp, ptr_type, "dpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(dp, rv)
+                .map_err(|e| e.to_string())?;
+            let ni = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "ni")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, ni)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(le);
-            self.builder.build_return(Some(&data)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&data))
+                .map_err(|e| e.to_string())?;
 
             for name in &["addVectors", "vecAdd"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::List(Box::new(Type::Float)));
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::List(Box::new(Type::Float)));
             }
         }
 
         // --- subtractVectors(a: ptr, b: ptr) -> ptr ---
         {
             let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-            let func = self.module.add_function("englang_subtractVectors", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_subtractVectors", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             let lc = self.context.append_basic_block(func, "lc");
             let lb = self.context.append_basic_block(func, "lb");
@@ -2692,58 +4504,162 @@ impl<'ctx> CodeGen<'ctx> {
             let a = func.get_nth_param(0).unwrap().into_pointer_value();
             let b = func.get_nth_param(1).unwrap().into_pointer_value();
             let neg16 = i64_type.const_int((-16i64) as u64, true);
-            let lp = unsafe { self.builder.build_gep(i8_type, a, &[neg16], "lp").map_err(|e| e.to_string())? };
-            let lp = self.builder.build_pointer_cast(lp, ptr_type, "lpt").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, lp, "len").map_err(|e| e.to_string())?.into_int_value();
+            let lp = unsafe {
+                self.builder
+                    .build_gep(i8_type, a, &[neg16], "lp")
+                    .map_err(|e| e.to_string())?
+            };
+            let lp = self
+                .builder
+                .build_pointer_cast(lp, ptr_type, "lpt")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, lp, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
             let hdr = i64_type.const_int(16, false);
             let esz = i64_type.const_int(8, false);
-            let dsz = self.builder.build_int_mul(len, esz, "dsz").map_err(|e| e.to_string())?;
-            let tsz = self.builder.build_int_add(hdr, dsz, "tsz").map_err(|e| e.to_string())?;
-            let base = self.builder.build_call(malloc, &[tsz.into()], "base").map_err(|e| e.to_string())?.try_as_basic_value();
-            let base = match base { ValueKind::Basic(v) => v.into_pointer_value(), _ => return Err("malloc void".to_string()) };
-            self.builder.build_store(base, len).map_err(|e| e.to_string())?;
-            let cp = unsafe { self.builder.build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp").map_err(|e| e.to_string())? };
-            let cp = self.builder.build_pointer_cast(cp, ptr_type, "cpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(cp, len).map_err(|e| e.to_string())?;
-            let data = unsafe { self.builder.build_gep(i8_type, base, &[hdr], "data").map_err(|e| e.to_string())? };
-            let ctr = self.builder.build_alloca(i64_type, "ctr").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let dsz = self
+                .builder
+                .build_int_mul(len, esz, "dsz")
+                .map_err(|e| e.to_string())?;
+            let tsz = self
+                .builder
+                .build_int_add(hdr, dsz, "tsz")
+                .map_err(|e| e.to_string())?;
+            let base = self
+                .builder
+                .build_call(malloc, &[tsz.into()], "base")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let base = match base {
+                ValueKind::Basic(v) => v.into_pointer_value(),
+                _ => return Err("malloc void".to_string()),
+            };
+            self.builder
+                .build_store(base, len)
+                .map_err(|e| e.to_string())?;
+            let cp = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp")
+                    .map_err(|e| e.to_string())?
+            };
+            let cp = self
+                .builder
+                .build_pointer_cast(cp, ptr_type, "cpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cp, len)
+                .map_err(|e| e.to_string())?;
+            let data = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[hdr], "data")
+                    .map_err(|e| e.to_string())?
+            };
+            let ctr = self
+                .builder
+                .build_alloca(i64_type, "ctr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lc);
-            let i = self.builder.build_load(i64_type, ctr, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "c").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, lb, le).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, ctr, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "c")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, lb, le)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lb);
-            let off = self.builder.build_int_mul(i, esz, "off").map_err(|e| e.to_string())?;
-            let ap = unsafe { self.builder.build_gep(i8_type, a, &[off], "ap").map_err(|e| e.to_string())? };
-            let ap = self.builder.build_pointer_cast(ap, ptr_type, "apt").map_err(|e| e.to_string())?;
-            let av = self.builder.build_load(f64_type, ap, "av").map_err(|e| e.to_string())?.into_float_value();
-            let bp = unsafe { self.builder.build_gep(i8_type, b, &[off], "bp").map_err(|e| e.to_string())? };
-            let bp = self.builder.build_pointer_cast(bp, ptr_type, "bpt").map_err(|e| e.to_string())?;
-            let bv = self.builder.build_load(f64_type, bp, "bv").map_err(|e| e.to_string())?.into_float_value();
-            let rv = self.builder.build_float_sub(av, bv, "rv").map_err(|e| e.to_string())?;
-            let dp = unsafe { self.builder.build_gep(i8_type, data, &[off], "dp").map_err(|e| e.to_string())? };
-            let dp = self.builder.build_pointer_cast(dp, ptr_type, "dpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(dp, rv).map_err(|e| e.to_string())?;
-            let ni = self.builder.build_int_add(i, i64_type.const_int(1, false), "ni").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, ni).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let off = self
+                .builder
+                .build_int_mul(i, esz, "off")
+                .map_err(|e| e.to_string())?;
+            let ap = unsafe {
+                self.builder
+                    .build_gep(i8_type, a, &[off], "ap")
+                    .map_err(|e| e.to_string())?
+            };
+            let ap = self
+                .builder
+                .build_pointer_cast(ap, ptr_type, "apt")
+                .map_err(|e| e.to_string())?;
+            let av = self
+                .builder
+                .build_load(f64_type, ap, "av")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let bp = unsafe {
+                self.builder
+                    .build_gep(i8_type, b, &[off], "bp")
+                    .map_err(|e| e.to_string())?
+            };
+            let bp = self
+                .builder
+                .build_pointer_cast(bp, ptr_type, "bpt")
+                .map_err(|e| e.to_string())?;
+            let bv = self
+                .builder
+                .build_load(f64_type, bp, "bv")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let rv = self
+                .builder
+                .build_float_sub(av, bv, "rv")
+                .map_err(|e| e.to_string())?;
+            let dp = unsafe {
+                self.builder
+                    .build_gep(i8_type, data, &[off], "dp")
+                    .map_err(|e| e.to_string())?
+            };
+            let dp = self
+                .builder
+                .build_pointer_cast(dp, ptr_type, "dpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(dp, rv)
+                .map_err(|e| e.to_string())?;
+            let ni = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "ni")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, ni)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(le);
-            self.builder.build_return(Some(&data)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&data))
+                .map_err(|e| e.to_string())?;
 
             for name in &["subtractVectors", "vecSub"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::List(Box::new(Type::Float)));
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::List(Box::new(Type::Float)));
             }
         }
 
         // --- scaleVector(vec: ptr, scalar: f64) -> ptr ---
         {
             let fn_type = ptr_type.fn_type(&[ptr_type.into(), f64_type.into()], false);
-            let func = self.module.add_function("englang_scaleVector", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_scaleVector", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             let lc = self.context.append_basic_block(func, "lc");
             let lb = self.context.append_basic_block(func, "lb");
@@ -2753,55 +4669,148 @@ impl<'ctx> CodeGen<'ctx> {
             let vec_p = func.get_nth_param(0).unwrap().into_pointer_value();
             let scalar = func.get_nth_param(1).unwrap().into_float_value();
             let neg16 = i64_type.const_int((-16i64) as u64, true);
-            let lp = unsafe { self.builder.build_gep(i8_type, vec_p, &[neg16], "lp").map_err(|e| e.to_string())? };
-            let lp = self.builder.build_pointer_cast(lp, ptr_type, "lpt").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, lp, "len").map_err(|e| e.to_string())?.into_int_value();
+            let lp = unsafe {
+                self.builder
+                    .build_gep(i8_type, vec_p, &[neg16], "lp")
+                    .map_err(|e| e.to_string())?
+            };
+            let lp = self
+                .builder
+                .build_pointer_cast(lp, ptr_type, "lpt")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, lp, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
             let hdr = i64_type.const_int(16, false);
             let esz = i64_type.const_int(8, false);
-            let dsz = self.builder.build_int_mul(len, esz, "dsz").map_err(|e| e.to_string())?;
-            let tsz = self.builder.build_int_add(hdr, dsz, "tsz").map_err(|e| e.to_string())?;
-            let base = self.builder.build_call(malloc, &[tsz.into()], "base").map_err(|e| e.to_string())?.try_as_basic_value();
-            let base = match base { ValueKind::Basic(v) => v.into_pointer_value(), _ => return Err("malloc void".to_string()) };
-            self.builder.build_store(base, len).map_err(|e| e.to_string())?;
-            let cp = unsafe { self.builder.build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp").map_err(|e| e.to_string())? };
-            let cp = self.builder.build_pointer_cast(cp, ptr_type, "cpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(cp, len).map_err(|e| e.to_string())?;
-            let data = unsafe { self.builder.build_gep(i8_type, base, &[hdr], "data").map_err(|e| e.to_string())? };
-            let ctr = self.builder.build_alloca(i64_type, "ctr").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let dsz = self
+                .builder
+                .build_int_mul(len, esz, "dsz")
+                .map_err(|e| e.to_string())?;
+            let tsz = self
+                .builder
+                .build_int_add(hdr, dsz, "tsz")
+                .map_err(|e| e.to_string())?;
+            let base = self
+                .builder
+                .build_call(malloc, &[tsz.into()], "base")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let base = match base {
+                ValueKind::Basic(v) => v.into_pointer_value(),
+                _ => return Err("malloc void".to_string()),
+            };
+            self.builder
+                .build_store(base, len)
+                .map_err(|e| e.to_string())?;
+            let cp = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp")
+                    .map_err(|e| e.to_string())?
+            };
+            let cp = self
+                .builder
+                .build_pointer_cast(cp, ptr_type, "cpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cp, len)
+                .map_err(|e| e.to_string())?;
+            let data = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[hdr], "data")
+                    .map_err(|e| e.to_string())?
+            };
+            let ctr = self
+                .builder
+                .build_alloca(i64_type, "ctr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lc);
-            let i = self.builder.build_load(i64_type, ctr, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "c").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, lb, le).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, ctr, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "c")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, lb, le)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lb);
-            let off = self.builder.build_int_mul(i, esz, "off").map_err(|e| e.to_string())?;
-            let vp = unsafe { self.builder.build_gep(i8_type, vec_p, &[off], "vp").map_err(|e| e.to_string())? };
-            let vp = self.builder.build_pointer_cast(vp, ptr_type, "vpt").map_err(|e| e.to_string())?;
-            let vv = self.builder.build_load(f64_type, vp, "vv").map_err(|e| e.to_string())?.into_float_value();
-            let rv = self.builder.build_float_mul(vv, scalar, "rv").map_err(|e| e.to_string())?;
-            let dp = unsafe { self.builder.build_gep(i8_type, data, &[off], "dp").map_err(|e| e.to_string())? };
-            let dp = self.builder.build_pointer_cast(dp, ptr_type, "dpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(dp, rv).map_err(|e| e.to_string())?;
-            let ni = self.builder.build_int_add(i, i64_type.const_int(1, false), "ni").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, ni).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let off = self
+                .builder
+                .build_int_mul(i, esz, "off")
+                .map_err(|e| e.to_string())?;
+            let vp = unsafe {
+                self.builder
+                    .build_gep(i8_type, vec_p, &[off], "vp")
+                    .map_err(|e| e.to_string())?
+            };
+            let vp = self
+                .builder
+                .build_pointer_cast(vp, ptr_type, "vpt")
+                .map_err(|e| e.to_string())?;
+            let vv = self
+                .builder
+                .build_load(f64_type, vp, "vv")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let rv = self
+                .builder
+                .build_float_mul(vv, scalar, "rv")
+                .map_err(|e| e.to_string())?;
+            let dp = unsafe {
+                self.builder
+                    .build_gep(i8_type, data, &[off], "dp")
+                    .map_err(|e| e.to_string())?
+            };
+            let dp = self
+                .builder
+                .build_pointer_cast(dp, ptr_type, "dpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(dp, rv)
+                .map_err(|e| e.to_string())?;
+            let ni = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "ni")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, ni)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(le);
-            self.builder.build_return(Some(&data)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&data))
+                .map_err(|e| e.to_string())?;
 
             for name in &["scaleVector", "vecScale"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::List(Box::new(Type::Float)));
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::List(Box::new(Type::Float)));
             }
         }
 
         // --- applySigmoid(vec: ptr) -> ptr  [1/(1+exp(-x))] ---
         {
             let fn_type = ptr_type.fn_type(&[ptr_type.into()], false);
-            let func = self.module.add_function("englang_applySigmoid", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_applySigmoid", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             let lc = self.context.append_basic_block(func, "lc");
             let lb = self.context.append_basic_block(func, "lb");
@@ -2810,53 +4819,157 @@ impl<'ctx> CodeGen<'ctx> {
 
             let vec_p = func.get_nth_param(0).unwrap().into_pointer_value();
             let neg16 = i64_type.const_int((-16i64) as u64, true);
-            let lp = unsafe { self.builder.build_gep(i8_type, vec_p, &[neg16], "lp").map_err(|e| e.to_string())? };
-            let lp = self.builder.build_pointer_cast(lp, ptr_type, "lpt").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, lp, "len").map_err(|e| e.to_string())?.into_int_value();
+            let lp = unsafe {
+                self.builder
+                    .build_gep(i8_type, vec_p, &[neg16], "lp")
+                    .map_err(|e| e.to_string())?
+            };
+            let lp = self
+                .builder
+                .build_pointer_cast(lp, ptr_type, "lpt")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, lp, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
             let hdr = i64_type.const_int(16, false);
             let esz = i64_type.const_int(8, false);
-            let dsz = self.builder.build_int_mul(len, esz, "dsz").map_err(|e| e.to_string())?;
-            let tsz = self.builder.build_int_add(hdr, dsz, "tsz").map_err(|e| e.to_string())?;
-            let base = self.builder.build_call(malloc, &[tsz.into()], "base").map_err(|e| e.to_string())?.try_as_basic_value();
-            let base = match base { ValueKind::Basic(v) => v.into_pointer_value(), _ => return Err("malloc void".to_string()) };
-            self.builder.build_store(base, len).map_err(|e| e.to_string())?;
-            let cp = unsafe { self.builder.build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp").map_err(|e| e.to_string())? };
-            let cp = self.builder.build_pointer_cast(cp, ptr_type, "cpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(cp, len).map_err(|e| e.to_string())?;
-            let data = unsafe { self.builder.build_gep(i8_type, base, &[hdr], "data").map_err(|e| e.to_string())? };
-            let ctr = self.builder.build_alloca(i64_type, "ctr").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let dsz = self
+                .builder
+                .build_int_mul(len, esz, "dsz")
+                .map_err(|e| e.to_string())?;
+            let tsz = self
+                .builder
+                .build_int_add(hdr, dsz, "tsz")
+                .map_err(|e| e.to_string())?;
+            let base = self
+                .builder
+                .build_call(malloc, &[tsz.into()], "base")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let base = match base {
+                ValueKind::Basic(v) => v.into_pointer_value(),
+                _ => return Err("malloc void".to_string()),
+            };
+            self.builder
+                .build_store(base, len)
+                .map_err(|e| e.to_string())?;
+            let cp = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp")
+                    .map_err(|e| e.to_string())?
+            };
+            let cp = self
+                .builder
+                .build_pointer_cast(cp, ptr_type, "cpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cp, len)
+                .map_err(|e| e.to_string())?;
+            let data = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[hdr], "data")
+                    .map_err(|e| e.to_string())?
+            };
+            let ctr = self
+                .builder
+                .build_alloca(i64_type, "ctr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lc);
-            let i = self.builder.build_load(i64_type, ctr, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "c").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, lb, le).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, ctr, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "c")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, lb, le)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lb);
-            let off = self.builder.build_int_mul(i, esz, "off").map_err(|e| e.to_string())?;
-            let vp = unsafe { self.builder.build_gep(i8_type, vec_p, &[off], "vp").map_err(|e| e.to_string())? };
-            let vp = self.builder.build_pointer_cast(vp, ptr_type, "vpt").map_err(|e| e.to_string())?;
-            let x = self.builder.build_load(f64_type, vp, "x").map_err(|e| e.to_string())?.into_float_value();
-            let neg_x = self.builder.build_float_neg(x, "neg_x").map_err(|e| e.to_string())?;
-            let ex = self.builder.build_call(c_exp, &[neg_x.into()], "ex").map_err(|e| e.to_string())?.try_as_basic_value();
-            let ex = match ex { ValueKind::Basic(v) => v.into_float_value(), _ => return Err("exp void".to_string()) };
+            let off = self
+                .builder
+                .build_int_mul(i, esz, "off")
+                .map_err(|e| e.to_string())?;
+            let vp = unsafe {
+                self.builder
+                    .build_gep(i8_type, vec_p, &[off], "vp")
+                    .map_err(|e| e.to_string())?
+            };
+            let vp = self
+                .builder
+                .build_pointer_cast(vp, ptr_type, "vpt")
+                .map_err(|e| e.to_string())?;
+            let x = self
+                .builder
+                .build_load(f64_type, vp, "x")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let neg_x = self
+                .builder
+                .build_float_neg(x, "neg_x")
+                .map_err(|e| e.to_string())?;
+            let ex = self
+                .builder
+                .build_call(c_exp, &[neg_x.into()], "ex")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let ex = match ex {
+                ValueKind::Basic(v) => v.into_float_value(),
+                _ => return Err("exp void".to_string()),
+            };
             let one = f64_type.const_float(1.0);
-            let denom = self.builder.build_float_add(one, ex, "denom").map_err(|e| e.to_string())?;
-            let sig = self.builder.build_float_div(one, denom, "sig").map_err(|e| e.to_string())?;
-            let dp = unsafe { self.builder.build_gep(i8_type, data, &[off], "dp").map_err(|e| e.to_string())? };
-            let dp = self.builder.build_pointer_cast(dp, ptr_type, "dpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(dp, sig).map_err(|e| e.to_string())?;
-            let ni = self.builder.build_int_add(i, i64_type.const_int(1, false), "ni").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, ni).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let denom = self
+                .builder
+                .build_float_add(one, ex, "denom")
+                .map_err(|e| e.to_string())?;
+            let sig = self
+                .builder
+                .build_float_div(one, denom, "sig")
+                .map_err(|e| e.to_string())?;
+            let dp = unsafe {
+                self.builder
+                    .build_gep(i8_type, data, &[off], "dp")
+                    .map_err(|e| e.to_string())?
+            };
+            let dp = self
+                .builder
+                .build_pointer_cast(dp, ptr_type, "dpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(dp, sig)
+                .map_err(|e| e.to_string())?;
+            let ni = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "ni")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, ni)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(le);
-            self.builder.build_return(Some(&data)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&data))
+                .map_err(|e| e.to_string())?;
 
             for name in &["applySigmoid", "sigmoid"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::List(Box::new(Type::Float)));
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::List(Box::new(Type::Float)));
             }
         }
 
@@ -2872,57 +4985,154 @@ impl<'ctx> CodeGen<'ctx> {
 
             let vec_p = func.get_nth_param(0).unwrap().into_pointer_value();
             let neg16 = i64_type.const_int((-16i64) as u64, true);
-            let lp = unsafe { self.builder.build_gep(i8_type, vec_p, &[neg16], "lp").map_err(|e| e.to_string())? };
-            let lp = self.builder.build_pointer_cast(lp, ptr_type, "lpt").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, lp, "len").map_err(|e| e.to_string())?.into_int_value();
+            let lp = unsafe {
+                self.builder
+                    .build_gep(i8_type, vec_p, &[neg16], "lp")
+                    .map_err(|e| e.to_string())?
+            };
+            let lp = self
+                .builder
+                .build_pointer_cast(lp, ptr_type, "lpt")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, lp, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
             let hdr = i64_type.const_int(16, false);
             let esz = i64_type.const_int(8, false);
-            let dsz = self.builder.build_int_mul(len, esz, "dsz").map_err(|e| e.to_string())?;
-            let tsz = self.builder.build_int_add(hdr, dsz, "tsz").map_err(|e| e.to_string())?;
-            let base = self.builder.build_call(malloc, &[tsz.into()], "base").map_err(|e| e.to_string())?.try_as_basic_value();
-            let base = match base { ValueKind::Basic(v) => v.into_pointer_value(), _ => return Err("malloc void".to_string()) };
-            self.builder.build_store(base, len).map_err(|e| e.to_string())?;
-            let cp = unsafe { self.builder.build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp").map_err(|e| e.to_string())? };
-            let cp = self.builder.build_pointer_cast(cp, ptr_type, "cpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(cp, len).map_err(|e| e.to_string())?;
-            let data = unsafe { self.builder.build_gep(i8_type, base, &[hdr], "data").map_err(|e| e.to_string())? };
-            let ctr = self.builder.build_alloca(i64_type, "ctr").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let dsz = self
+                .builder
+                .build_int_mul(len, esz, "dsz")
+                .map_err(|e| e.to_string())?;
+            let tsz = self
+                .builder
+                .build_int_add(hdr, dsz, "tsz")
+                .map_err(|e| e.to_string())?;
+            let base = self
+                .builder
+                .build_call(malloc, &[tsz.into()], "base")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let base = match base {
+                ValueKind::Basic(v) => v.into_pointer_value(),
+                _ => return Err("malloc void".to_string()),
+            };
+            self.builder
+                .build_store(base, len)
+                .map_err(|e| e.to_string())?;
+            let cp = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp")
+                    .map_err(|e| e.to_string())?
+            };
+            let cp = self
+                .builder
+                .build_pointer_cast(cp, ptr_type, "cpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cp, len)
+                .map_err(|e| e.to_string())?;
+            let data = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[hdr], "data")
+                    .map_err(|e| e.to_string())?
+            };
+            let ctr = self
+                .builder
+                .build_alloca(i64_type, "ctr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lc);
-            let i = self.builder.build_load(i64_type, ctr, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "c").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, lb, le).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, ctr, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "c")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, lb, le)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lb);
-            let off = self.builder.build_int_mul(i, esz, "off").map_err(|e| e.to_string())?;
-            let vp = unsafe { self.builder.build_gep(i8_type, vec_p, &[off], "vp").map_err(|e| e.to_string())? };
-            let vp = self.builder.build_pointer_cast(vp, ptr_type, "vpt").map_err(|e| e.to_string())?;
-            let x = self.builder.build_load(f64_type, vp, "x").map_err(|e| e.to_string())?.into_float_value();
+            let off = self
+                .builder
+                .build_int_mul(i, esz, "off")
+                .map_err(|e| e.to_string())?;
+            let vp = unsafe {
+                self.builder
+                    .build_gep(i8_type, vec_p, &[off], "vp")
+                    .map_err(|e| e.to_string())?
+            };
+            let vp = self
+                .builder
+                .build_pointer_cast(vp, ptr_type, "vpt")
+                .map_err(|e| e.to_string())?;
+            let x = self
+                .builder
+                .build_load(f64_type, vp, "x")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
             let zero = f64_type.const_float(0.0);
-            let rv = self.builder.build_call(c_fmax, &[zero.into(), x.into()], "rv").map_err(|e| e.to_string())?.try_as_basic_value();
-            let rv = match rv { ValueKind::Basic(v) => v, _ => return Err("fmax void".to_string()) };
-            let dp = unsafe { self.builder.build_gep(i8_type, data, &[off], "dp").map_err(|e| e.to_string())? };
-            let dp = self.builder.build_pointer_cast(dp, ptr_type, "dpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(dp, rv).map_err(|e| e.to_string())?;
-            let ni = self.builder.build_int_add(i, i64_type.const_int(1, false), "ni").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, ni).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let rv = self
+                .builder
+                .build_call(c_fmax, &[zero.into(), x.into()], "rv")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let rv = match rv {
+                ValueKind::Basic(v) => v,
+                _ => return Err("fmax void".to_string()),
+            };
+            let dp = unsafe {
+                self.builder
+                    .build_gep(i8_type, data, &[off], "dp")
+                    .map_err(|e| e.to_string())?
+            };
+            let dp = self
+                .builder
+                .build_pointer_cast(dp, ptr_type, "dpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(dp, rv)
+                .map_err(|e| e.to_string())?;
+            let ni = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "ni")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, ni)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(le);
-            self.builder.build_return(Some(&data)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&data))
+                .map_err(|e| e.to_string())?;
 
             for name in &["applyRelu", "relu"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::List(Box::new(Type::Float)));
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::List(Box::new(Type::Float)));
             }
         }
 
         // --- applySoftmax(vec: ptr) -> ptr ---
         {
             let fn_type = ptr_type.fn_type(&[ptr_type.into()], false);
-            let func = self.module.add_function("englang_applySoftmax", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_applySoftmax", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             let max_lc = self.context.append_basic_block(func, "max_lc");
             let max_lb = self.context.append_basic_block(func, "max_lb");
@@ -2937,114 +5147,340 @@ impl<'ctx> CodeGen<'ctx> {
 
             let vec_p = func.get_nth_param(0).unwrap().into_pointer_value();
             let neg16 = i64_type.const_int((-16i64) as u64, true);
-            let lp = unsafe { self.builder.build_gep(i8_type, vec_p, &[neg16], "lp").map_err(|e| e.to_string())? };
-            let lp = self.builder.build_pointer_cast(lp, ptr_type, "lpt").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, lp, "len").map_err(|e| e.to_string())?.into_int_value();
+            let lp = unsafe {
+                self.builder
+                    .build_gep(i8_type, vec_p, &[neg16], "lp")
+                    .map_err(|e| e.to_string())?
+            };
+            let lp = self
+                .builder
+                .build_pointer_cast(lp, ptr_type, "lpt")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, lp, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
             let hdr = i64_type.const_int(16, false);
             let esz = i64_type.const_int(8, false);
-            let dsz = self.builder.build_int_mul(len, esz, "dsz").map_err(|e| e.to_string())?;
-            let tsz = self.builder.build_int_add(hdr, dsz, "tsz").map_err(|e| e.to_string())?;
-            let base = self.builder.build_call(malloc, &[tsz.into()], "base").map_err(|e| e.to_string())?.try_as_basic_value();
-            let base = match base { ValueKind::Basic(v) => v.into_pointer_value(), _ => return Err("malloc void".to_string()) };
-            self.builder.build_store(base, len).map_err(|e| e.to_string())?;
-            let cp = unsafe { self.builder.build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp").map_err(|e| e.to_string())? };
-            let cp = self.builder.build_pointer_cast(cp, ptr_type, "cpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(cp, len).map_err(|e| e.to_string())?;
-            let data = unsafe { self.builder.build_gep(i8_type, base, &[hdr], "data").map_err(|e| e.to_string())? };
+            let dsz = self
+                .builder
+                .build_int_mul(len, esz, "dsz")
+                .map_err(|e| e.to_string())?;
+            let tsz = self
+                .builder
+                .build_int_add(hdr, dsz, "tsz")
+                .map_err(|e| e.to_string())?;
+            let base = self
+                .builder
+                .build_call(malloc, &[tsz.into()], "base")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let base = match base {
+                ValueKind::Basic(v) => v.into_pointer_value(),
+                _ => return Err("malloc void".to_string()),
+            };
+            self.builder
+                .build_store(base, len)
+                .map_err(|e| e.to_string())?;
+            let cp = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp")
+                    .map_err(|e| e.to_string())?
+            };
+            let cp = self
+                .builder
+                .build_pointer_cast(cp, ptr_type, "cpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cp, len)
+                .map_err(|e| e.to_string())?;
+            let data = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[hdr], "data")
+                    .map_err(|e| e.to_string())?
+            };
 
             // Pass 1: find max for numerical stability
-            let first_p = self.builder.build_pointer_cast(vec_p, ptr_type, "fp").map_err(|e| e.to_string())?;
-            let first = self.builder.build_load(f64_type, first_p, "first").map_err(|e| e.to_string())?.into_float_value();
-            let max_v = self.builder.build_alloca(f64_type, "max_v").map_err(|e| e.to_string())?;
-            self.builder.build_store(max_v, first).map_err(|e| e.to_string())?;
-            let ctr = self.builder.build_alloca(i64_type, "ctr").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, i64_type.const_int(1, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(max_lc).map_err(|e| e.to_string())?;
+            let first_p = self
+                .builder
+                .build_pointer_cast(vec_p, ptr_type, "fp")
+                .map_err(|e| e.to_string())?;
+            let first = self
+                .builder
+                .build_load(f64_type, first_p, "first")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let max_v = self
+                .builder
+                .build_alloca(f64_type, "max_v")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(max_v, first)
+                .map_err(|e| e.to_string())?;
+            let ctr = self
+                .builder
+                .build_alloca(i64_type, "ctr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, i64_type.const_int(1, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(max_lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(max_lc);
-            let i = self.builder.build_load(i64_type, ctr, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "c").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, max_lb, max_le).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, ctr, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "c")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, max_lb, max_le)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(max_lb);
-            let off = self.builder.build_int_mul(i, esz, "off").map_err(|e| e.to_string())?;
-            let vp = unsafe { self.builder.build_gep(i8_type, vec_p, &[off], "vp").map_err(|e| e.to_string())? };
-            let vp = self.builder.build_pointer_cast(vp, ptr_type, "vpt").map_err(|e| e.to_string())?;
-            let x = self.builder.build_load(f64_type, vp, "x").map_err(|e| e.to_string())?.into_float_value();
-            let cur_max = self.builder.build_load(f64_type, max_v, "cm").map_err(|e| e.to_string())?.into_float_value();
-            let new_max = self.builder.build_call(c_fmax, &[cur_max.into(), x.into()], "nm").map_err(|e| e.to_string())?.try_as_basic_value();
-            let new_max = match new_max { ValueKind::Basic(v) => v.into_float_value(), _ => return Err("fmax void".to_string()) };
-            self.builder.build_store(max_v, new_max).map_err(|e| e.to_string())?;
-            let ni = self.builder.build_int_add(i, i64_type.const_int(1, false), "ni").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, ni).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(max_lc).map_err(|e| e.to_string())?;
+            let off = self
+                .builder
+                .build_int_mul(i, esz, "off")
+                .map_err(|e| e.to_string())?;
+            let vp = unsafe {
+                self.builder
+                    .build_gep(i8_type, vec_p, &[off], "vp")
+                    .map_err(|e| e.to_string())?
+            };
+            let vp = self
+                .builder
+                .build_pointer_cast(vp, ptr_type, "vpt")
+                .map_err(|e| e.to_string())?;
+            let x = self
+                .builder
+                .build_load(f64_type, vp, "x")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let cur_max = self
+                .builder
+                .build_load(f64_type, max_v, "cm")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_max = self
+                .builder
+                .build_call(c_fmax, &[cur_max.into(), x.into()], "nm")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let new_max = match new_max {
+                ValueKind::Basic(v) => v.into_float_value(),
+                _ => return Err("fmax void".to_string()),
+            };
+            self.builder
+                .build_store(max_v, new_max)
+                .map_err(|e| e.to_string())?;
+            let ni = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "ni")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, ni)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(max_lc)
+                .map_err(|e| e.to_string())?;
 
             // Pass 2: exp(x - max) and sum
             self.builder.position_at_end(max_le);
-            let max_val = self.builder.build_load(f64_type, max_v, "max_val").map_err(|e| e.to_string())?.into_float_value();
-            let sum_v = self.builder.build_alloca(f64_type, "sum_v").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_v, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(exp_lc).map_err(|e| e.to_string())?;
+            let max_val = self
+                .builder
+                .build_load(f64_type, max_v, "max_val")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let sum_v = self
+                .builder
+                .build_alloca(f64_type, "sum_v")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_v, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(exp_lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(exp_lc);
-            let i = self.builder.build_load(i64_type, ctr, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "c").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, exp_lb, exp_le).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, ctr, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "c")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, exp_lb, exp_le)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(exp_lb);
-            let off = self.builder.build_int_mul(i, esz, "off").map_err(|e| e.to_string())?;
-            let vp = unsafe { self.builder.build_gep(i8_type, vec_p, &[off], "vp").map_err(|e| e.to_string())? };
-            let vp = self.builder.build_pointer_cast(vp, ptr_type, "vpt").map_err(|e| e.to_string())?;
-            let x = self.builder.build_load(f64_type, vp, "x").map_err(|e| e.to_string())?.into_float_value();
-            let xm = self.builder.build_float_sub(x, max_val, "xm").map_err(|e| e.to_string())?;
-            let ex = self.builder.build_call(c_exp, &[xm.into()], "ex").map_err(|e| e.to_string())?.try_as_basic_value();
-            let ex = match ex { ValueKind::Basic(v) => v.into_float_value(), _ => return Err("exp void".to_string()) };
-            let dp = unsafe { self.builder.build_gep(i8_type, data, &[off], "dp").map_err(|e| e.to_string())? };
-            let dp = self.builder.build_pointer_cast(dp, ptr_type, "dpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(dp, ex).map_err(|e| e.to_string())?;
-            let cur_sum = self.builder.build_load(f64_type, sum_v, "cs").map_err(|e| e.to_string())?.into_float_value();
-            let new_sum = self.builder.build_float_add(cur_sum, ex, "ns").map_err(|e| e.to_string())?;
-            self.builder.build_store(sum_v, new_sum).map_err(|e| e.to_string())?;
-            let ni = self.builder.build_int_add(i, i64_type.const_int(1, false), "ni").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, ni).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(exp_lc).map_err(|e| e.to_string())?;
+            let off = self
+                .builder
+                .build_int_mul(i, esz, "off")
+                .map_err(|e| e.to_string())?;
+            let vp = unsafe {
+                self.builder
+                    .build_gep(i8_type, vec_p, &[off], "vp")
+                    .map_err(|e| e.to_string())?
+            };
+            let vp = self
+                .builder
+                .build_pointer_cast(vp, ptr_type, "vpt")
+                .map_err(|e| e.to_string())?;
+            let x = self
+                .builder
+                .build_load(f64_type, vp, "x")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let xm = self
+                .builder
+                .build_float_sub(x, max_val, "xm")
+                .map_err(|e| e.to_string())?;
+            let ex = self
+                .builder
+                .build_call(c_exp, &[xm.into()], "ex")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let ex = match ex {
+                ValueKind::Basic(v) => v.into_float_value(),
+                _ => return Err("exp void".to_string()),
+            };
+            let dp = unsafe {
+                self.builder
+                    .build_gep(i8_type, data, &[off], "dp")
+                    .map_err(|e| e.to_string())?
+            };
+            let dp = self
+                .builder
+                .build_pointer_cast(dp, ptr_type, "dpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(dp, ex)
+                .map_err(|e| e.to_string())?;
+            let cur_sum = self
+                .builder
+                .build_load(f64_type, sum_v, "cs")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let new_sum = self
+                .builder
+                .build_float_add(cur_sum, ex, "ns")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(sum_v, new_sum)
+                .map_err(|e| e.to_string())?;
+            let ni = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "ni")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, ni)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(exp_lc)
+                .map_err(|e| e.to_string())?;
 
             // Pass 3: normalize
             self.builder.position_at_end(exp_le);
-            let total = self.builder.build_load(f64_type, sum_v, "total").map_err(|e| e.to_string())?.into_float_value();
-            self.builder.build_store(ctr, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(norm_lc).map_err(|e| e.to_string())?;
+            let total = self
+                .builder
+                .build_load(f64_type, sum_v, "total")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            self.builder
+                .build_store(ctr, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(norm_lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(norm_lc);
-            let i = self.builder.build_load(i64_type, ctr, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "c").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, norm_lb, norm_le).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, ctr, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "c")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, norm_lb, norm_le)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(norm_lb);
-            let off = self.builder.build_int_mul(i, esz, "off").map_err(|e| e.to_string())?;
-            let dp = unsafe { self.builder.build_gep(i8_type, data, &[off], "dp").map_err(|e| e.to_string())? };
-            let dp = self.builder.build_pointer_cast(dp, ptr_type, "dpt").map_err(|e| e.to_string())?;
-            let ev = self.builder.build_load(f64_type, dp, "ev").map_err(|e| e.to_string())?.into_float_value();
-            let nv = self.builder.build_float_div(ev, total, "nv").map_err(|e| e.to_string())?;
-            self.builder.build_store(dp, nv).map_err(|e| e.to_string())?;
-            let ni = self.builder.build_int_add(i, i64_type.const_int(1, false), "ni").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, ni).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(norm_lc).map_err(|e| e.to_string())?;
+            let off = self
+                .builder
+                .build_int_mul(i, esz, "off")
+                .map_err(|e| e.to_string())?;
+            let dp = unsafe {
+                self.builder
+                    .build_gep(i8_type, data, &[off], "dp")
+                    .map_err(|e| e.to_string())?
+            };
+            let dp = self
+                .builder
+                .build_pointer_cast(dp, ptr_type, "dpt")
+                .map_err(|e| e.to_string())?;
+            let ev = self
+                .builder
+                .build_load(f64_type, dp, "ev")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let nv = self
+                .builder
+                .build_float_div(ev, total, "nv")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(dp, nv)
+                .map_err(|e| e.to_string())?;
+            let ni = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "ni")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, ni)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(norm_lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(norm_le);
-            self.builder.build_return(Some(&data)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&data))
+                .map_err(|e| e.to_string())?;
 
             for name in &["applySoftmax", "softmax"] {
                 self.builtin_functions.insert(name.to_string(), func);
-                self.builtin_return_types.insert(name.to_string(), Type::List(Box::new(Type::Float)));
+                self.builtin_return_types
+                    .insert(name.to_string(), Type::List(Box::new(Type::Float)));
             }
         }
 
         // --- matVecMul(mat: ptr, vec: ptr, rows: i64, cols: i64) -> ptr ---
         // mat is row-major flattened: mat[row*cols + col]
         {
-            let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), i64_type.into(), i64_type.into()], false);
+            let fn_type = ptr_type.fn_type(
+                &[
+                    ptr_type.into(),
+                    ptr_type.into(),
+                    i64_type.into(),
+                    i64_type.into(),
+                ],
+                false,
+            );
             let func = self.module.add_function("englang_matVecMul", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             let row_lc = self.context.append_basic_block(func, "row_lc");
@@ -3061,72 +5497,224 @@ impl<'ctx> CodeGen<'ctx> {
             let cols = func.get_nth_param(3).unwrap().into_int_value();
             let hdr = i64_type.const_int(16, false);
             let esz = i64_type.const_int(8, false);
-            let dsz = self.builder.build_int_mul(rows, esz, "dsz").map_err(|e| e.to_string())?;
-            let tsz = self.builder.build_int_add(hdr, dsz, "tsz").map_err(|e| e.to_string())?;
-            let base = self.builder.build_call(malloc, &[tsz.into()], "base").map_err(|e| e.to_string())?.try_as_basic_value();
-            let base = match base { ValueKind::Basic(v) => v.into_pointer_value(), _ => return Err("malloc void".to_string()) };
-            self.builder.build_store(base, rows).map_err(|e| e.to_string())?;
-            let cp = unsafe { self.builder.build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp").map_err(|e| e.to_string())? };
-            let cp = self.builder.build_pointer_cast(cp, ptr_type, "cpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(cp, rows).map_err(|e| e.to_string())?;
-            let data = unsafe { self.builder.build_gep(i8_type, base, &[hdr], "data").map_err(|e| e.to_string())? };
-            let row_ctr = self.builder.build_alloca(i64_type, "row_ctr").map_err(|e| e.to_string())?;
-            self.builder.build_store(row_ctr, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(row_lc).map_err(|e| e.to_string())?;
+            let dsz = self
+                .builder
+                .build_int_mul(rows, esz, "dsz")
+                .map_err(|e| e.to_string())?;
+            let tsz = self
+                .builder
+                .build_int_add(hdr, dsz, "tsz")
+                .map_err(|e| e.to_string())?;
+            let base = self
+                .builder
+                .build_call(malloc, &[tsz.into()], "base")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let base = match base {
+                ValueKind::Basic(v) => v.into_pointer_value(),
+                _ => return Err("malloc void".to_string()),
+            };
+            self.builder
+                .build_store(base, rows)
+                .map_err(|e| e.to_string())?;
+            let cp = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp")
+                    .map_err(|e| e.to_string())?
+            };
+            let cp = self
+                .builder
+                .build_pointer_cast(cp, ptr_type, "cpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(cp, rows)
+                .map_err(|e| e.to_string())?;
+            let data = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[hdr], "data")
+                    .map_err(|e| e.to_string())?
+            };
+            let row_ctr = self
+                .builder
+                .build_alloca(i64_type, "row_ctr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(row_ctr, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(row_lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(row_lc);
-            let row = self.builder.build_load(i64_type, row_ctr, "row").map_err(|e| e.to_string())?.into_int_value();
-            let rc = self.builder.build_int_compare(inkwell::IntPredicate::SLT, row, rows, "rc").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(rc, row_lb, row_le).map_err(|e| e.to_string())?;
+            let row = self
+                .builder
+                .build_load(i64_type, row_ctr, "row")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let rc = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, row, rows, "rc")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(rc, row_lb, row_le)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(row_lb);
-            let acc = self.builder.build_alloca(f64_type, "acc").map_err(|e| e.to_string())?;
-            self.builder.build_store(acc, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
-            let col_ctr = self.builder.build_alloca(i64_type, "col_ctr").map_err(|e| e.to_string())?;
-            self.builder.build_store(col_ctr, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(col_lc).map_err(|e| e.to_string())?;
+            let acc = self
+                .builder
+                .build_alloca(f64_type, "acc")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(acc, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
+            let col_ctr = self
+                .builder
+                .build_alloca(i64_type, "col_ctr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(col_ctr, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(col_lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(col_lc);
-            let col = self.builder.build_load(i64_type, col_ctr, "col").map_err(|e| e.to_string())?.into_int_value();
-            let cc = self.builder.build_int_compare(inkwell::IntPredicate::SLT, col, cols, "cc").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cc, col_lb, col_le).map_err(|e| e.to_string())?;
+            let col = self
+                .builder
+                .build_load(i64_type, col_ctr, "col")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cc = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, col, cols, "cc")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cc, col_lb, col_le)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(col_lb);
-            let row_reload = self.builder.build_load(i64_type, row_ctr, "row2").map_err(|e| e.to_string())?.into_int_value();
-            let mat_row = self.builder.build_int_mul(row_reload, cols, "mr").map_err(|e| e.to_string())?;
-            let mat_idx = self.builder.build_int_add(mat_row, col, "mi").map_err(|e| e.to_string())?;
-            let mat_off = self.builder.build_int_mul(mat_idx, esz, "mo").map_err(|e| e.to_string())?;
-            let mp = unsafe { self.builder.build_gep(i8_type, mat, &[mat_off], "mp").map_err(|e| e.to_string())? };
-            let mp = self.builder.build_pointer_cast(mp, ptr_type, "mpt").map_err(|e| e.to_string())?;
-            let mv = self.builder.build_load(f64_type, mp, "mv").map_err(|e| e.to_string())?.into_float_value();
-            let col_off = self.builder.build_int_mul(col, esz, "co").map_err(|e| e.to_string())?;
-            let vp2 = unsafe { self.builder.build_gep(i8_type, vec_p, &[col_off], "vp2").map_err(|e| e.to_string())? };
-            let vp2 = self.builder.build_pointer_cast(vp2, ptr_type, "vp2t").map_err(|e| e.to_string())?;
-            let vv = self.builder.build_load(f64_type, vp2, "vv").map_err(|e| e.to_string())?.into_float_value();
-            let prod = self.builder.build_float_mul(mv, vv, "prod").map_err(|e| e.to_string())?;
-            let cur = self.builder.build_load(f64_type, acc, "cur").map_err(|e| e.to_string())?.into_float_value();
-            let nxt = self.builder.build_float_add(cur, prod, "nxt").map_err(|e| e.to_string())?;
-            self.builder.build_store(acc, nxt).map_err(|e| e.to_string())?;
-            let nc = self.builder.build_int_add(col, i64_type.const_int(1, false), "nc").map_err(|e| e.to_string())?;
-            self.builder.build_store(col_ctr, nc).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(col_lc).map_err(|e| e.to_string())?;
+            let row_reload = self
+                .builder
+                .build_load(i64_type, row_ctr, "row2")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let mat_row = self
+                .builder
+                .build_int_mul(row_reload, cols, "mr")
+                .map_err(|e| e.to_string())?;
+            let mat_idx = self
+                .builder
+                .build_int_add(mat_row, col, "mi")
+                .map_err(|e| e.to_string())?;
+            let mat_off = self
+                .builder
+                .build_int_mul(mat_idx, esz, "mo")
+                .map_err(|e| e.to_string())?;
+            let mp = unsafe {
+                self.builder
+                    .build_gep(i8_type, mat, &[mat_off], "mp")
+                    .map_err(|e| e.to_string())?
+            };
+            let mp = self
+                .builder
+                .build_pointer_cast(mp, ptr_type, "mpt")
+                .map_err(|e| e.to_string())?;
+            let mv = self
+                .builder
+                .build_load(f64_type, mp, "mv")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let col_off = self
+                .builder
+                .build_int_mul(col, esz, "co")
+                .map_err(|e| e.to_string())?;
+            let vp2 = unsafe {
+                self.builder
+                    .build_gep(i8_type, vec_p, &[col_off], "vp2")
+                    .map_err(|e| e.to_string())?
+            };
+            let vp2 = self
+                .builder
+                .build_pointer_cast(vp2, ptr_type, "vp2t")
+                .map_err(|e| e.to_string())?;
+            let vv = self
+                .builder
+                .build_load(f64_type, vp2, "vv")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let prod = self
+                .builder
+                .build_float_mul(mv, vv, "prod")
+                .map_err(|e| e.to_string())?;
+            let cur = self
+                .builder
+                .build_load(f64_type, acc, "cur")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let nxt = self
+                .builder
+                .build_float_add(cur, prod, "nxt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(acc, nxt)
+                .map_err(|e| e.to_string())?;
+            let nc = self
+                .builder
+                .build_int_add(col, i64_type.const_int(1, false), "nc")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(col_ctr, nc)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(col_lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(col_le);
-            let dot = self.builder.build_load(f64_type, acc, "dot").map_err(|e| e.to_string())?.into_float_value();
-            let row_reload2 = self.builder.build_load(i64_type, row_ctr, "row3").map_err(|e| e.to_string())?.into_int_value();
-            let row_off = self.builder.build_int_mul(row_reload2, esz, "ro").map_err(|e| e.to_string())?;
-            let dp = unsafe { self.builder.build_gep(i8_type, data, &[row_off], "dp").map_err(|e| e.to_string())? };
-            let dp = self.builder.build_pointer_cast(dp, ptr_type, "dpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(dp, dot).map_err(|e| e.to_string())?;
-            let nr = self.builder.build_int_add(row_reload2, i64_type.const_int(1, false), "nr").map_err(|e| e.to_string())?;
-            self.builder.build_store(row_ctr, nr).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(row_lc).map_err(|e| e.to_string())?;
+            let dot = self
+                .builder
+                .build_load(f64_type, acc, "dot")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let row_reload2 = self
+                .builder
+                .build_load(i64_type, row_ctr, "row3")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let row_off = self
+                .builder
+                .build_int_mul(row_reload2, esz, "ro")
+                .map_err(|e| e.to_string())?;
+            let dp = unsafe {
+                self.builder
+                    .build_gep(i8_type, data, &[row_off], "dp")
+                    .map_err(|e| e.to_string())?
+            };
+            let dp = self
+                .builder
+                .build_pointer_cast(dp, ptr_type, "dpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(dp, dot)
+                .map_err(|e| e.to_string())?;
+            let nr = self
+                .builder
+                .build_int_add(row_reload2, i64_type.const_int(1, false), "nr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(row_ctr, nr)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(row_lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(row_le);
-            self.builder.build_return(Some(&data)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&data))
+                .map_err(|e| e.to_string())?;
 
             self.builtin_functions.insert("matVecMul".to_string(), func);
-            self.builtin_return_types.insert("matVecMul".to_string(), Type::List(Box::new(Type::Float)));
+            self.builtin_return_types
+                .insert("matVecMul".to_string(), Type::List(Box::new(Type::Float)));
         }
 
         // --- mseLoss(pred: ptr, target: ptr) -> f64 ---
@@ -3142,52 +5730,146 @@ impl<'ctx> CodeGen<'ctx> {
             let pred = func.get_nth_param(0).unwrap().into_pointer_value();
             let tgt = func.get_nth_param(1).unwrap().into_pointer_value();
             let neg16 = i64_type.const_int((-16i64) as u64, true);
-            let lp = unsafe { self.builder.build_gep(i8_type, pred, &[neg16], "lp").map_err(|e| e.to_string())? };
-            let lp = self.builder.build_pointer_cast(lp, ptr_type, "lpt").map_err(|e| e.to_string())?;
-            let len = self.builder.build_load(i64_type, lp, "len").map_err(|e| e.to_string())?.into_int_value();
-            let acc = self.builder.build_alloca(f64_type, "acc").map_err(|e| e.to_string())?;
-            self.builder.build_store(acc, f64_type.const_float(0.0)).map_err(|e| e.to_string())?;
-            let ctr = self.builder.build_alloca(i64_type, "ctr").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let lp = unsafe {
+                self.builder
+                    .build_gep(i8_type, pred, &[neg16], "lp")
+                    .map_err(|e| e.to_string())?
+            };
+            let lp = self
+                .builder
+                .build_pointer_cast(lp, ptr_type, "lpt")
+                .map_err(|e| e.to_string())?;
+            let len = self
+                .builder
+                .build_load(i64_type, lp, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let acc = self
+                .builder
+                .build_alloca(f64_type, "acc")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(acc, f64_type.const_float(0.0))
+                .map_err(|e| e.to_string())?;
+            let ctr = self
+                .builder
+                .build_alloca(i64_type, "ctr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lc);
-            let i = self.builder.build_load(i64_type, ctr, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, len, "c").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, lb, le).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, ctr, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "c")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, lb, le)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lb);
             let esz = i64_type.const_int(8, false);
-            let off = self.builder.build_int_mul(i, esz, "off").map_err(|e| e.to_string())?;
-            let pp = unsafe { self.builder.build_gep(i8_type, pred, &[off], "pp").map_err(|e| e.to_string())? };
-            let pp = self.builder.build_pointer_cast(pp, ptr_type, "ppt").map_err(|e| e.to_string())?;
-            let pv = self.builder.build_load(f64_type, pp, "pv").map_err(|e| e.to_string())?.into_float_value();
-            let tp2 = unsafe { self.builder.build_gep(i8_type, tgt, &[off], "tp").map_err(|e| e.to_string())? };
-            let tp2 = self.builder.build_pointer_cast(tp2, ptr_type, "tpt").map_err(|e| e.to_string())?;
-            let tv = self.builder.build_load(f64_type, tp2, "tv").map_err(|e| e.to_string())?.into_float_value();
-            let diff = self.builder.build_float_sub(pv, tv, "diff").map_err(|e| e.to_string())?;
-            let sq = self.builder.build_float_mul(diff, diff, "sq").map_err(|e| e.to_string())?;
-            let cur = self.builder.build_load(f64_type, acc, "cur").map_err(|e| e.to_string())?.into_float_value();
-            let nxt = self.builder.build_float_add(cur, sq, "nxt").map_err(|e| e.to_string())?;
-            self.builder.build_store(acc, nxt).map_err(|e| e.to_string())?;
-            let ni = self.builder.build_int_add(i, i64_type.const_int(1, false), "ni").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, ni).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let off = self
+                .builder
+                .build_int_mul(i, esz, "off")
+                .map_err(|e| e.to_string())?;
+            let pp = unsafe {
+                self.builder
+                    .build_gep(i8_type, pred, &[off], "pp")
+                    .map_err(|e| e.to_string())?
+            };
+            let pp = self
+                .builder
+                .build_pointer_cast(pp, ptr_type, "ppt")
+                .map_err(|e| e.to_string())?;
+            let pv = self
+                .builder
+                .build_load(f64_type, pp, "pv")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let tp2 = unsafe {
+                self.builder
+                    .build_gep(i8_type, tgt, &[off], "tp")
+                    .map_err(|e| e.to_string())?
+            };
+            let tp2 = self
+                .builder
+                .build_pointer_cast(tp2, ptr_type, "tpt")
+                .map_err(|e| e.to_string())?;
+            let tv = self
+                .builder
+                .build_load(f64_type, tp2, "tv")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let diff = self
+                .builder
+                .build_float_sub(pv, tv, "diff")
+                .map_err(|e| e.to_string())?;
+            let sq = self
+                .builder
+                .build_float_mul(diff, diff, "sq")
+                .map_err(|e| e.to_string())?;
+            let cur = self
+                .builder
+                .build_load(f64_type, acc, "cur")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let nxt = self
+                .builder
+                .build_float_add(cur, sq, "nxt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(acc, nxt)
+                .map_err(|e| e.to_string())?;
+            let ni = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "ni")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, ni)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(le);
-            let total = self.builder.build_load(f64_type, acc, "total").map_err(|e| e.to_string())?.into_float_value();
-            let len_f = self.builder.build_signed_int_to_float(len, f64_type, "len_f").map_err(|e| e.to_string())?;
-            let mse = self.builder.build_float_div(total, len_f, "mse").map_err(|e| e.to_string())?;
-            self.builder.build_return(Some(&mse)).map_err(|e| e.to_string())?;
+            let total = self
+                .builder
+                .build_load(f64_type, acc, "total")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
+            let len_f = self
+                .builder
+                .build_signed_int_to_float(len, f64_type, "len_f")
+                .map_err(|e| e.to_string())?;
+            let mse = self
+                .builder
+                .build_float_div(total, len_f, "mse")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&mse))
+                .map_err(|e| e.to_string())?;
 
             self.builtin_functions.insert("mseLoss".to_string(), func);
-            self.builtin_return_types.insert("mseLoss".to_string(), Type::Float);
+            self.builtin_return_types
+                .insert("mseLoss".to_string(), Type::Float);
         }
 
         // --- randNormal(n: i64) -> ptr  [Uniform(-0.5, 0.5) * 0.2 init] ---
         {
             let fn_type = ptr_type.fn_type(&[i64_type.into()], false);
-            let func = self.module.add_function("englang_randNormal", fn_type, None);
+            let func = self
+                .module
+                .add_function("englang_randNormal", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             let lc = self.context.append_basic_block(func, "lc");
             let lb = self.context.append_basic_block(func, "lb");
@@ -3197,65 +5879,192 @@ impl<'ctx> CodeGen<'ctx> {
             let n = func.get_nth_param(0).unwrap().into_int_value();
             let hdr = i64_type.const_int(16, false);
             let esz = i64_type.const_int(8, false);
-            let dsz = self.builder.build_int_mul(n, esz, "dsz").map_err(|e| e.to_string())?;
-            let tsz = self.builder.build_int_add(hdr, dsz, "tsz").map_err(|e| e.to_string())?;
-            let base = self.builder.build_call(malloc, &[tsz.into()], "base").map_err(|e| e.to_string())?.try_as_basic_value();
-            let base = match base { ValueKind::Basic(v) => v.into_pointer_value(), _ => return Err("malloc void".to_string()) };
-            self.builder.build_store(base, n).map_err(|e| e.to_string())?;
-            let cp = unsafe { self.builder.build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp").map_err(|e| e.to_string())? };
-            let cp = self.builder.build_pointer_cast(cp, ptr_type, "cpt").map_err(|e| e.to_string())?;
+            let dsz = self
+                .builder
+                .build_int_mul(n, esz, "dsz")
+                .map_err(|e| e.to_string())?;
+            let tsz = self
+                .builder
+                .build_int_add(hdr, dsz, "tsz")
+                .map_err(|e| e.to_string())?;
+            let base = self
+                .builder
+                .build_call(malloc, &[tsz.into()], "base")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let base = match base {
+                ValueKind::Basic(v) => v.into_pointer_value(),
+                _ => return Err("malloc void".to_string()),
+            };
+            self.builder
+                .build_store(base, n)
+                .map_err(|e| e.to_string())?;
+            let cp = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cp")
+                    .map_err(|e| e.to_string())?
+            };
+            let cp = self
+                .builder
+                .build_pointer_cast(cp, ptr_type, "cpt")
+                .map_err(|e| e.to_string())?;
             self.builder.build_store(cp, n).map_err(|e| e.to_string())?;
-            let data = unsafe { self.builder.build_gep(i8_type, base, &[hdr], "data").map_err(|e| e.to_string())? };
-            let ctr = self.builder.build_alloca(i64_type, "ctr").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, i64_type.const_int(0, false)).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let data = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[hdr], "data")
+                    .map_err(|e| e.to_string())?
+            };
+            let ctr = self
+                .builder
+                .build_alloca(i64_type, "ctr")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lc);
-            let i = self.builder.build_load(i64_type, ctr, "i").map_err(|e| e.to_string())?.into_int_value();
-            let cond = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i, n, "c").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cond, lb, le).map_err(|e| e.to_string())?;
+            let i = self
+                .builder
+                .build_load(i64_type, ctr, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, n, "c")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cond, lb, le)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(lb);
             // u1 = rand() / RAND_MAX  → [0,1]
-            let r1 = self.builder.build_call(c_rand, &[], "r1").map_err(|e| e.to_string())?.try_as_basic_value();
-            let r1 = match r1 { ValueKind::Basic(v) => v.into_int_value(), _ => return Err("rand void".to_string()) };
-            let r1f = self.builder.build_signed_int_to_float(r1, f64_type, "r1f").map_err(|e| e.to_string())?;
+            let r1 = self
+                .builder
+                .build_call(c_rand, &[], "r1")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let r1 = match r1 {
+                ValueKind::Basic(v) => v.into_int_value(),
+                _ => return Err("rand void".to_string()),
+            };
+            let r1f = self
+                .builder
+                .build_signed_int_to_float(r1, f64_type, "r1f")
+                .map_err(|e| e.to_string())?;
             let rm = f64_type.const_float(2147483647.0);
-            let u1 = self.builder.build_float_div(r1f, rm, "u1").map_err(|e| e.to_string())?;
+            let u1 = self
+                .builder
+                .build_float_div(r1f, rm, "u1")
+                .map_err(|e| e.to_string())?;
             // u2 = rand() / RAND_MAX
-            let r2 = self.builder.build_call(c_rand, &[], "r2").map_err(|e| e.to_string())?.try_as_basic_value();
-            let r2 = match r2 { ValueKind::Basic(v) => v.into_int_value(), _ => return Err("rand void".to_string()) };
-            let r2f = self.builder.build_signed_int_to_float(r2, f64_type, "r2f").map_err(|e| e.to_string())?;
-            let u2 = self.builder.build_float_div(r2f, rm, "u2").map_err(|e| e.to_string())?;
+            let r2 = self
+                .builder
+                .build_call(c_rand, &[], "r2")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let r2 = match r2 {
+                ValueKind::Basic(v) => v.into_int_value(),
+                _ => return Err("rand void".to_string()),
+            };
+            let r2f = self
+                .builder
+                .build_signed_int_to_float(r2, f64_type, "r2f")
+                .map_err(|e| e.to_string())?;
+            let u2 = self
+                .builder
+                .build_float_div(r2f, rm, "u2")
+                .map_err(|e| e.to_string())?;
             // Box-Muller: z = sqrt(-2*ln(u1+eps)) * cos(2*pi*u2), scaled by 0.1
             let eps = f64_type.const_float(1e-10);
-            let u1e = self.builder.build_float_add(u1, eps, "u1e").map_err(|e| e.to_string())?;
-            let ln_u1 = self.builder.build_call(c_log, &[u1e.into()], "ln_u1").map_err(|e| e.to_string())?.try_as_basic_value();
-            let ln_u1 = match ln_u1 { ValueKind::Basic(v) => v.into_float_value(), _ => return Err("log void".to_string()) };
+            let u1e = self
+                .builder
+                .build_float_add(u1, eps, "u1e")
+                .map_err(|e| e.to_string())?;
+            let ln_u1 = self
+                .builder
+                .build_call(c_log, &[u1e.into()], "ln_u1")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let ln_u1 = match ln_u1 {
+                ValueKind::Basic(v) => v.into_float_value(),
+                _ => return Err("log void".to_string()),
+            };
             let neg2 = f64_type.const_float(-2.0);
-            let arg = self.builder.build_float_mul(neg2, ln_u1, "arg").map_err(|e| e.to_string())?;
-            let mag = self.builder.build_call(c_sqrt, &[arg.into()], "mag").map_err(|e| e.to_string())?.try_as_basic_value();
-            let mag = match mag { ValueKind::Basic(v) => v.into_float_value(), _ => return Err("sqrt void".to_string()) };
+            let arg = self
+                .builder
+                .build_float_mul(neg2, ln_u1, "arg")
+                .map_err(|e| e.to_string())?;
+            let mag = self
+                .builder
+                .build_call(c_sqrt, &[arg.into()], "mag")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let mag = match mag {
+                ValueKind::Basic(v) => v.into_float_value(),
+                _ => return Err("sqrt void".to_string()),
+            };
             let two_pi = f64_type.const_float(std::f64::consts::TAU);
-            let ang = self.builder.build_float_mul(two_pi, u2, "ang").map_err(|e| e.to_string())?;
-            let cos_ang = self.builder.build_call(c_cos, &[ang.into()], "ca").map_err(|e| e.to_string())?.try_as_basic_value();
-            let cos_ang = match cos_ang { ValueKind::Basic(v) => v.into_float_value(), _ => return Err("cos void".to_string()) };
-            let z = self.builder.build_float_mul(mag, cos_ang, "z").map_err(|e| e.to_string())?;
+            let ang = self
+                .builder
+                .build_float_mul(two_pi, u2, "ang")
+                .map_err(|e| e.to_string())?;
+            let cos_ang = self
+                .builder
+                .build_call(c_cos, &[ang.into()], "ca")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let cos_ang = match cos_ang {
+                ValueKind::Basic(v) => v.into_float_value(),
+                _ => return Err("cos void".to_string()),
+            };
+            let z = self
+                .builder
+                .build_float_mul(mag, cos_ang, "z")
+                .map_err(|e| e.to_string())?;
             let scale = f64_type.const_float(0.1);
-            let rv = self.builder.build_float_mul(z, scale, "rv").map_err(|e| e.to_string())?;
-            let off = self.builder.build_int_mul(i, esz, "off").map_err(|e| e.to_string())?;
-            let dp = unsafe { self.builder.build_gep(i8_type, data, &[off], "dp").map_err(|e| e.to_string())? };
-            let dp = self.builder.build_pointer_cast(dp, ptr_type, "dpt").map_err(|e| e.to_string())?;
-            self.builder.build_store(dp, rv).map_err(|e| e.to_string())?;
-            let ni = self.builder.build_int_add(i, i64_type.const_int(1, false), "ni").map_err(|e| e.to_string())?;
-            self.builder.build_store(ctr, ni).map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(lc).map_err(|e| e.to_string())?;
+            let rv = self
+                .builder
+                .build_float_mul(z, scale, "rv")
+                .map_err(|e| e.to_string())?;
+            let off = self
+                .builder
+                .build_int_mul(i, esz, "off")
+                .map_err(|e| e.to_string())?;
+            let dp = unsafe {
+                self.builder
+                    .build_gep(i8_type, data, &[off], "dp")
+                    .map_err(|e| e.to_string())?
+            };
+            let dp = self
+                .builder
+                .build_pointer_cast(dp, ptr_type, "dpt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(dp, rv)
+                .map_err(|e| e.to_string())?;
+            let ni = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "ni")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(ctr, ni)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(lc)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(le);
-            self.builder.build_return(Some(&data)).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&data))
+                .map_err(|e| e.to_string())?;
 
-            self.builtin_functions.insert("randNormal".to_string(), func);
-            self.builtin_return_types.insert("randNormal".to_string(), Type::List(Box::new(Type::Float)));
+            self.builtin_functions
+                .insert("randNormal".to_string(), func);
+            self.builtin_return_types
+                .insert("randNormal".to_string(), Type::List(Box::new(Type::Float)));
         }
 
         // ==================== PLOTTING FUNCTION ====================
@@ -3264,17 +6073,29 @@ impl<'ctx> CodeGen<'ctx> {
         // Generates an HTML file with embedded Plotly.js chart
         {
             // Get C functions by name
-            let plot_fopen = self.module.get_function("fopen").ok_or("fopen not declared")?;
-            let plot_fclose = self.module.get_function("fclose").ok_or("fclose not declared")?;
-            let plot_fprintf = self.module.get_function("fprintf").ok_or("fprintf not declared")?;
+            let plot_fopen = self
+                .module
+                .get_function("fopen")
+                .ok_or("fopen not declared")?;
+            let plot_fclose = self
+                .module
+                .get_function("fclose")
+                .ok_or("fclose not declared")?;
+            let plot_fprintf = self
+                .module
+                .get_function("fprintf")
+                .ok_or("fprintf not declared")?;
 
-            let fn_type = bool_type.fn_type(&[
-                ptr_type.into(),  // data array
-                ptr_type.into(),  // against array (or null for single data)
-                i64_type.into(),  // chart_type: 0=line, 1=bar, 2=scatter, 3=histogram
-                ptr_type.into(),  // title (or null)
-                ptr_type.into(),  // output filename
-            ], false);
+            let fn_type = bool_type.fn_type(
+                &[
+                    ptr_type.into(), // data array
+                    ptr_type.into(), // against array (or null for single data)
+                    i64_type.into(), // chart_type: 0=line, 1=bar, 2=scatter, 3=histogram
+                    ptr_type.into(), // title (or null)
+                    ptr_type.into(), // output filename
+                ],
+                false,
+            );
             let func = self.module.add_function("englang_plot", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             let write_header = self.context.append_basic_block(func, "write_header");
@@ -3297,21 +6118,36 @@ impl<'ctx> CodeGen<'ctx> {
             // Get data array length (stored at offset -16 from data pointer)
             let len_offset = i64_type.const_int((-16i64) as u64, true);
             let len_ptr = unsafe {
-                self.builder.build_gep(i8_type, data, &[len_offset], "len_ptr")
+                self.builder
+                    .build_gep(i8_type, data, &[len_offset], "len_ptr")
                     .map_err(|e| e.to_string())?
             };
-            let len_ptr_i64 = self.builder
-                .build_pointer_cast(len_ptr, self.context.ptr_type(inkwell::AddressSpace::default()), "len_ptr_i64")
+            let len_ptr_i64 = self
+                .builder
+                .build_pointer_cast(
+                    len_ptr,
+                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                    "len_ptr_i64",
+                )
                 .map_err(|e| e.to_string())?;
-            let data_len = self.builder
+            let data_len = self
+                .builder
                 .build_load(i64_type, len_ptr_i64, "data_len")
                 .map_err(|e| e.to_string())?
                 .into_int_value();
 
             // Open file for writing
-            let mode_str = self.builder.build_global_string_ptr("w", "write_mode").map_err(|e| e.to_string())?;
-            let file = self.builder
-                .build_call(plot_fopen, &[filename.into(), mode_str.as_pointer_value().into()], "file")
+            let mode_str = self
+                .builder
+                .build_global_string_ptr("w", "write_mode")
+                .map_err(|e| e.to_string())?;
+            let file = self
+                .builder
+                .build_call(
+                    plot_fopen,
+                    &[filename.into(), mode_str.as_pointer_value().into()],
+                    "file",
+                )
                 .map_err(|e| e.to_string())?
                 .try_as_basic_value();
             let file_ptr = match file {
@@ -3319,8 +6155,13 @@ impl<'ctx> CodeGen<'ctx> {
                 _ => return Err("fopen returned void".to_string()),
             };
 
-            let is_null = self.builder.build_is_null(file_ptr, "is_null").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(is_null, fail_bb, write_header).map_err(|e| e.to_string())?;
+            let is_null = self
+                .builder
+                .build_is_null(file_ptr, "is_null")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(is_null, fail_bb, write_header)
+                .map_err(|e| e.to_string())?;
 
             // write_header: Write HTML header with Plotly.js CDN
             self.builder.position_at_end(write_header);
@@ -3328,75 +6169,194 @@ impl<'ctx> CodeGen<'ctx> {
                 "<!DOCTYPE html>\n<html><head>\n<script src=\"https://cdn.plot.ly/plotly-2.24.1.min.js\"></script>\n</head><body>\n<div id=\"chart\"></div>\n<script>\nvar yData = [",
                 "html_header"
             ).map_err(|e| e.to_string())?;
-            let fmt_s = self.builder.build_global_string_ptr("%s", "fmt_s").map_err(|e| e.to_string())?;
-            self.builder.build_call(plot_fprintf, &[file_ptr.into(), fmt_s.as_pointer_value().into(), html_header.as_pointer_value().into()], "")
+            let fmt_s = self
+                .builder
+                .build_global_string_ptr("%s", "fmt_s")
                 .map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(write_data).map_err(|e| e.to_string())?;
+            self.builder
+                .build_call(
+                    plot_fprintf,
+                    &[
+                        file_ptr.into(),
+                        fmt_s.as_pointer_value().into(),
+                        html_header.as_pointer_value().into(),
+                    ],
+                    "",
+                )
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(write_data)
+                .map_err(|e| e.to_string())?;
 
             // write_data: Initialize loop
             self.builder.position_at_end(write_data);
-            self.builder.build_unconditional_branch(data_loop_cond).map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(data_loop_cond)
+                .map_err(|e| e.to_string())?;
 
             // data_loop_cond: Check if i < len
             self.builder.position_at_end(data_loop_cond);
-            let i_phi = self.builder.build_phi(i64_type, "i").map_err(|e| e.to_string())?;
+            let i_phi = self
+                .builder
+                .build_phi(i64_type, "i")
+                .map_err(|e| e.to_string())?;
             i_phi.add_incoming(&[(&i64_type.const_int(0, false), write_data)]);
             let i_val = i_phi.as_basic_value().into_int_value();
-            let cmp = self.builder.build_int_compare(inkwell::IntPredicate::SLT, i_val, data_len, "cmp").map_err(|e| e.to_string())?;
-            self.builder.build_conditional_branch(cmp, data_loop_body, data_loop_end).map_err(|e| e.to_string())?;
+            let cmp = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i_val, data_len, "cmp")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(cmp, data_loop_body, data_loop_end)
+                .map_err(|e| e.to_string())?;
 
             // data_loop_body: Write each element
             self.builder.position_at_end(data_loop_body);
             // Get element: data[i]
-            let elem_offset = self.builder.build_int_mul(i_val, i64_type.const_int(8, false), "elem_offset").map_err(|e| e.to_string())?;
-            let elem_ptr = unsafe {
-                self.builder.build_gep(i8_type, data, &[elem_offset], "elem_ptr").map_err(|e| e.to_string())?
-            };
-            let elem_ptr_f64 = self.builder
-                .build_pointer_cast(elem_ptr, self.context.ptr_type(inkwell::AddressSpace::default()), "elem_ptr_f64")
+            let elem_offset = self
+                .builder
+                .build_int_mul(i_val, i64_type.const_int(8, false), "elem_offset")
                 .map_err(|e| e.to_string())?;
-            let elem = self.builder.build_load(f64_type, elem_ptr_f64, "elem").map_err(|e| e.to_string())?.into_float_value();
+            let elem_ptr = unsafe {
+                self.builder
+                    .build_gep(i8_type, data, &[elem_offset], "elem_ptr")
+                    .map_err(|e| e.to_string())?
+            };
+            let elem_ptr_f64 = self
+                .builder
+                .build_pointer_cast(
+                    elem_ptr,
+                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                    "elem_ptr_f64",
+                )
+                .map_err(|e| e.to_string())?;
+            let elem = self
+                .builder
+                .build_load(f64_type, elem_ptr_f64, "elem")
+                .map_err(|e| e.to_string())?
+                .into_float_value();
 
             // Write comma if not first element
-            let is_first = self.builder.build_int_compare(inkwell::IntPredicate::EQ, i_val, i64_type.const_int(0, false), "is_first").map_err(|e| e.to_string())?;
+            let is_first = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    i_val,
+                    i64_type.const_int(0, false),
+                    "is_first",
+                )
+                .map_err(|e| e.to_string())?;
             let write_comma_bb = self.context.append_basic_block(func, "write_comma");
             let write_num_bb = self.context.append_basic_block(func, "write_num");
-            self.builder.build_conditional_branch(is_first, write_num_bb, write_comma_bb).map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(is_first, write_num_bb, write_comma_bb)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(write_comma_bb);
-            let comma_fmt = self.builder.build_global_string_ptr(",%.6g", "comma_fmt").map_err(|e| e.to_string())?;
-            self.builder.build_call(plot_fprintf, &[file_ptr.into(), comma_fmt.as_pointer_value().into(), elem.into()], "").map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(write_num_bb).map_err(|e| e.to_string())?;
+            let comma_fmt = self
+                .builder
+                .build_global_string_ptr(",%.6g", "comma_fmt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_call(
+                    plot_fprintf,
+                    &[
+                        file_ptr.into(),
+                        comma_fmt.as_pointer_value().into(),
+                        elem.into(),
+                    ],
+                    "",
+                )
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(write_num_bb)
+                .map_err(|e| e.to_string())?;
 
             // Merge point - but first element case
             let after_comma_bb = self.context.append_basic_block(func, "after_comma");
             self.builder.position_at_end(write_num_bb);
-            let is_first2 = self.builder.build_int_compare(inkwell::IntPredicate::EQ, i_val, i64_type.const_int(0, false), "is_first2").map_err(|e| e.to_string())?;
+            let is_first2 = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    i_val,
+                    i64_type.const_int(0, false),
+                    "is_first2",
+                )
+                .map_err(|e| e.to_string())?;
             let write_first_bb = self.context.append_basic_block(func, "write_first");
-            self.builder.build_conditional_branch(is_first2, write_first_bb, after_comma_bb).map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(is_first2, write_first_bb, after_comma_bb)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(write_first_bb);
-            let num_fmt = self.builder.build_global_string_ptr("%.6g", "num_fmt").map_err(|e| e.to_string())?;
-            self.builder.build_call(plot_fprintf, &[file_ptr.into(), num_fmt.as_pointer_value().into(), elem.into()], "").map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(after_comma_bb).map_err(|e| e.to_string())?;
+            let num_fmt = self
+                .builder
+                .build_global_string_ptr("%.6g", "num_fmt")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_call(
+                    plot_fprintf,
+                    &[
+                        file_ptr.into(),
+                        num_fmt.as_pointer_value().into(),
+                        elem.into(),
+                    ],
+                    "",
+                )
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(after_comma_bb)
+                .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(after_comma_bb);
-            let i_next = self.builder.build_int_add(i_val, i64_type.const_int(1, false), "i_next").map_err(|e| e.to_string())?;
+            let i_next = self
+                .builder
+                .build_int_add(i_val, i64_type.const_int(1, false), "i_next")
+                .map_err(|e| e.to_string())?;
             i_phi.add_incoming(&[(&i_next, after_comma_bb)]);
-            self.builder.build_unconditional_branch(data_loop_cond).map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(data_loop_cond)
+                .map_err(|e| e.to_string())?;
 
             // data_loop_end: Write footer
             self.builder.position_at_end(data_loop_end);
-            self.builder.build_unconditional_branch(write_footer).map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(write_footer)
+                .map_err(|e| e.to_string())?;
 
             // write_footer: Determine chart type and write appropriate Plotly config
             self.builder.position_at_end(write_footer);
 
             // Check chart type and write appropriate trace config
             // 0=line, 1=bar, 2=scatter, 3=histogram
-            let is_line = self.builder.build_int_compare(inkwell::IntPredicate::EQ, chart_type_val, i64_type.const_int(0, false), "is_line").map_err(|e| e.to_string())?;
-            let is_bar = self.builder.build_int_compare(inkwell::IntPredicate::EQ, chart_type_val, i64_type.const_int(1, false), "is_bar").map_err(|e| e.to_string())?;
-            let is_scatter = self.builder.build_int_compare(inkwell::IntPredicate::EQ, chart_type_val, i64_type.const_int(2, false), "is_scatter").map_err(|e| e.to_string())?;
+            let is_line = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    chart_type_val,
+                    i64_type.const_int(0, false),
+                    "is_line",
+                )
+                .map_err(|e| e.to_string())?;
+            let is_bar = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    chart_type_val,
+                    i64_type.const_int(1, false),
+                    "is_bar",
+                )
+                .map_err(|e| e.to_string())?;
+            let is_scatter = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    chart_type_val,
+                    i64_type.const_int(2, false),
+                    "is_scatter",
+                )
+                .map_err(|e| e.to_string())?;
 
             // For simplicity, use a single trace format for all types - mode/type varies
             let line_footer = self.builder.build_global_string_ptr(
@@ -3417,28 +6377,85 @@ impl<'ctx> CodeGen<'ctx> {
             ).map_err(|e| e.to_string())?;
 
             // Select the right footer based on chart type
-            let footer1 = self.builder.build_select(is_line, line_footer.as_pointer_value(), bar_footer.as_pointer_value(), "footer1").map_err(|e| e.to_string())?;
-            let footer2 = self.builder.build_select(is_bar, bar_footer.as_pointer_value(), footer1.into_pointer_value(), "footer2").map_err(|e| e.to_string())?;
-            let footer3 = self.builder.build_select(is_scatter, scatter_footer.as_pointer_value(), footer2.into_pointer_value(), "footer3").map_err(|e| e.to_string())?;
+            let footer1 = self
+                .builder
+                .build_select(
+                    is_line,
+                    line_footer.as_pointer_value(),
+                    bar_footer.as_pointer_value(),
+                    "footer1",
+                )
+                .map_err(|e| e.to_string())?;
+            let footer2 = self
+                .builder
+                .build_select(
+                    is_bar,
+                    bar_footer.as_pointer_value(),
+                    footer1.into_pointer_value(),
+                    "footer2",
+                )
+                .map_err(|e| e.to_string())?;
+            let footer3 = self
+                .builder
+                .build_select(
+                    is_scatter,
+                    scatter_footer.as_pointer_value(),
+                    footer2.into_pointer_value(),
+                    "footer3",
+                )
+                .map_err(|e| e.to_string())?;
 
             // Default to histogram if not line/bar/scatter
-            let is_histogram = self.builder.build_int_compare(inkwell::IntPredicate::EQ, chart_type_val, i64_type.const_int(3, false), "is_histogram").map_err(|e| e.to_string())?;
-            let final_footer = self.builder.build_select(is_histogram, histogram_footer.as_pointer_value(), footer3.into_pointer_value(), "final_footer").map_err(|e| e.to_string())?;
+            let is_histogram = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    chart_type_val,
+                    i64_type.const_int(3, false),
+                    "is_histogram",
+                )
+                .map_err(|e| e.to_string())?;
+            let final_footer = self
+                .builder
+                .build_select(
+                    is_histogram,
+                    histogram_footer.as_pointer_value(),
+                    footer3.into_pointer_value(),
+                    "final_footer",
+                )
+                .map_err(|e| e.to_string())?;
 
-            self.builder.build_call(plot_fprintf, &[file_ptr.into(), fmt_s.as_pointer_value().into(), final_footer.into_pointer_value().into()], "")
+            self.builder
+                .build_call(
+                    plot_fprintf,
+                    &[
+                        file_ptr.into(),
+                        fmt_s.as_pointer_value().into(),
+                        final_footer.into_pointer_value().into(),
+                    ],
+                    "",
+                )
                 .map_err(|e| e.to_string())?;
 
             // Close file
-            self.builder.build_call(plot_fclose, &[file_ptr.into()], "").map_err(|e| e.to_string())?;
-            self.builder.build_unconditional_branch(success_bb).map_err(|e| e.to_string())?;
+            self.builder
+                .build_call(plot_fclose, &[file_ptr.into()], "")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(success_bb)
+                .map_err(|e| e.to_string())?;
 
             // success: return true
             self.builder.position_at_end(success_bb);
-            self.builder.build_return(Some(&bool_type.const_int(1, false))).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&bool_type.const_int(1, false)))
+                .map_err(|e| e.to_string())?;
 
             // fail: return false
             self.builder.position_at_end(fail_bb);
-            self.builder.build_return(Some(&bool_type.const_int(0, false))).map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&bool_type.const_int(0, false)))
+                .map_err(|e| e.to_string())?;
 
             // Note: We don't register this as a builtin since it's called via compile_plot
         }
@@ -3653,9 +6670,7 @@ impl<'ctx> CodeGen<'ctx> {
                 .get_terminator()
                 .is_none()
             {
-                self.builder
-                    .build_return(None)
-                    .map_err(|e| e.to_string())?;
+                self.builder.build_return(None).map_err(|e| e.to_string())?;
             }
         }
 
@@ -3673,15 +6688,15 @@ impl<'ctx> CodeGen<'ctx> {
         let mut field_type_map: HashMap<String, Type> = HashMap::new();
 
         // If there's a parent, include its fields first
-        if let Some(parent_name) = &class.parent {
-            if let Some((_, parent_fields)) = self.class_types.get(parent_name) {
-                let parent_field_types = self.class_field_types.get(parent_name).unwrap();
-                for field_name in parent_fields {
-                    let ft = parent_field_types.get(field_name).unwrap().clone();
-                    field_names.push(field_name.clone());
-                    field_llvm_types.push(self.get_llvm_type(&ft));
-                    field_type_map.insert(field_name.clone(), ft);
-                }
+        if let Some(parent_name) = &class.parent
+            && let Some((_, parent_fields)) = self.class_types.get(parent_name)
+        {
+            let parent_field_types = self.class_field_types.get(parent_name).unwrap();
+            for field_name in parent_fields {
+                let ft = parent_field_types.get(field_name).unwrap().clone();
+                field_names.push(field_name.clone());
+                field_llvm_types.push(self.get_llvm_type(&ft));
+                field_type_map.insert(field_name.clone(), ft);
             }
         }
 
@@ -3712,10 +6727,10 @@ impl<'ctx> CodeGen<'ctx> {
         let mut methods_map: HashMap<String, FunctionValue<'ctx>> = HashMap::new();
 
         // Inherit parent methods
-        if let Some(parent_name) = &class.parent {
-            if let Some(parent_methods) = self.class_methods.get(parent_name) {
-                methods_map.extend(parent_methods.clone());
-            }
+        if let Some(parent_name) = &class.parent
+            && let Some(parent_methods) = self.class_methods.get(parent_name)
+        {
+            methods_map.extend(parent_methods.clone());
         }
 
         // Declare constructor
@@ -3728,8 +6743,7 @@ impl<'ctx> CodeGen<'ctx> {
             let ctor_type = self.context.void_type().fn_type(&param_types, false);
             let ctor_name = format!("{}_create", class.name);
             let ctor_fn = self.module.add_function(&ctor_name, ctor_type, None);
-            self.class_constructors
-                .insert(class.name.clone(), ctor_fn);
+            self.class_constructors.insert(class.name.clone(), ctor_fn);
         }
 
         // Declare methods
@@ -3752,8 +6766,7 @@ impl<'ctx> CodeGen<'ctx> {
             methods_map.insert(method.name.clone(), method_fn);
         }
 
-        self.class_methods
-            .insert(class.name.clone(), methods_map);
+        self.class_methods.insert(class.name.clone(), methods_map);
         Ok(())
     }
 
@@ -3782,8 +6795,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .builder
                     .build_struct_gep(struct_type, self_ptr, idx as u32, fname)
                     .map_err(|e| format!("GEP error: {:?}", e))?;
-                self.variables
-                    .insert(fname.clone(), (field_ptr, ftype));
+                self.variables.insert(fname.clone(), (field_ptr, ftype));
             }
 
             // Bind constructor parameters
@@ -3804,9 +6816,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.compile_statement(stmt)?;
             }
 
-            self.builder
-                .build_return(None)
-                .map_err(|e| e.to_string())?;
+            self.builder.build_return(None).map_err(|e| e.to_string())?;
 
             self.variables = saved_vars;
             self.current_self = saved_self;
@@ -3840,8 +6850,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .builder
                     .build_struct_gep(struct_type, self_ptr, idx as u32, fname)
                     .map_err(|e| format!("GEP error: {:?}", e))?;
-                self.variables
-                    .insert(fname.clone(), (field_ptr, ftype));
+                self.variables.insert(fname.clone(), (field_ptr, ftype));
             }
 
             // Bind method parameters
@@ -3863,18 +6872,15 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             // Implicit return for void methods
-            if method.return_type == Type::Void {
-                if self
+            if method.return_type == Type::Void
+                && self
                     .builder
                     .get_insert_block()
                     .unwrap()
                     .get_terminator()
                     .is_none()
-                {
-                    self.builder
-                        .build_return(None)
-                        .map_err(|e| e.to_string())?;
-                }
+            {
+                self.builder.build_return(None).map_err(|e| e.to_string())?;
             }
 
             self.variables = saved_vars;
@@ -4151,12 +7157,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .into_int_value();
                 let cond = self
                     .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::SLE,
-                        current_val,
-                        end_int,
-                        "for_cond",
-                    )
+                    .build_int_compare(inkwell::IntPredicate::SLE, current_val, end_int, "for_cond")
                     .map_err(|e| e.to_string())?;
                 self.builder
                     .build_conditional_branch(cond, body_bb, after_bb)
@@ -4236,6 +7237,49 @@ impl<'ctx> CodeGen<'ctx> {
                     .map_err(|e| e.to_string())?;
             }
 
+            Statement::IndexAssignment {
+                collection,
+                index,
+                value,
+            } => {
+                let i64_type = self.context.i64_type();
+                let i8_type = self.context.i8_type();
+                let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+
+                // Get the list buffer pointer exactly the way an index read does.
+                let coll_ptr = self.compile_expression(&Expr::Identifier(collection.clone()))?;
+                let coll_ptr = match coll_ptr {
+                    BasicValueEnum::PointerValue(pv) => pv,
+                    _ => return Err("Collection must be a pointer".to_string()),
+                };
+
+                let idx_val = self.compile_expression(index)?;
+                let idx = match idx_val {
+                    BasicValueEnum::IntValue(iv) => iv,
+                    _ => return Err("Index must be an integer".to_string()),
+                };
+
+                let elem_size = i64_type.const_int(8, false);
+                let offset = self
+                    .builder
+                    .build_int_mul(idx, elem_size, "offset")
+                    .map_err(|e| e.to_string())?;
+                let elem_ptr = unsafe {
+                    self.builder
+                        .build_gep(i8_type, coll_ptr, &[offset], "elem_ptr")
+                        .map_err(|e| e.to_string())?
+                };
+                let typed_ptr = self
+                    .builder
+                    .build_pointer_cast(elem_ptr, ptr_type, "typed_elem_ptr")
+                    .map_err(|e| e.to_string())?;
+
+                let val = self.compile_expression(value)?;
+                self.builder
+                    .build_store(typed_ptr, val)
+                    .map_err(|e| e.to_string())?;
+            }
+
             Statement::ExprStatement(expr) => {
                 self.compile_expression(expr)?;
             }
@@ -4247,9 +7291,7 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_return(Some(&val))
                         .map_err(|e| e.to_string())?;
                 } else {
-                    self.builder
-                        .build_return(None)
-                        .map_err(|e| e.to_string())?;
+                    self.builder.build_return(None).map_err(|e| e.to_string())?;
                 }
             }
 
@@ -4310,7 +7352,13 @@ impl<'ctx> CodeGen<'ctx> {
                 output_file,
             } => {
                 // Compile the plot statement - generates an HTML file with Plotly.js
-                self.compile_plot(data, against.as_ref(), chart_type, title.as_deref(), output_file)?;
+                self.compile_plot(
+                    data,
+                    against.as_ref(),
+                    chart_type,
+                    title.as_deref(),
+                    output_file,
+                )?;
             }
         }
 
@@ -4499,7 +7547,12 @@ impl<'ctx> CodeGen<'ctx> {
                 // Store capacity at offset 8
                 let cap_ptr = unsafe {
                     self.builder
-                        .build_gep(i8_type, base_ptr, &[i64_type.const_int(8, false)], "cap_ptr")
+                        .build_gep(
+                            i8_type,
+                            base_ptr,
+                            &[i64_type.const_int(8, false)],
+                            "cap_ptr",
+                        )
                         .map_err(|e| e.to_string())?
                 };
                 let cap_ptr_typed = self
@@ -4513,7 +7566,12 @@ impl<'ctx> CodeGen<'ctx> {
                 // Data starts at offset 16
                 let data_ptr = unsafe {
                     self.builder
-                        .build_gep(i8_type, base_ptr, &[i64_type.const_int(header_size, false)], "data_ptr")
+                        .build_gep(
+                            i8_type,
+                            base_ptr,
+                            &[i64_type.const_int(header_size, false)],
+                            "data_ptr",
+                        )
                         .map_err(|e| e.to_string())?
                 };
 
@@ -4617,23 +7675,17 @@ impl<'ctx> CodeGen<'ctx> {
                     let compiled_arg = self.compile_expression(arg)?;
 
                     // Auto-promote Int to Float for builtin math functions
-                    if let Some(ref meta) = builtin_meta {
-                        if meta.accepts_int_as_float {
-                            if let Some((_, Type::Float)) = meta.parameters.get(i) {
-                                if let BasicValueEnum::IntValue(iv) = compiled_arg {
-                                    let promoted = self
-                                        .builder
-                                        .build_signed_int_to_float(
-                                            iv,
-                                            self.context.f64_type(),
-                                            "promote",
-                                        )
-                                        .map_err(|e| e.to_string())?;
-                                    args.push(promoted.into());
-                                    continue;
-                                }
-                            }
-                        }
+                    if let Some(ref meta) = builtin_meta
+                        && meta.accepts_int_as_float
+                        && let Some((_, Type::Float)) = meta.parameters.get(i)
+                        && let BasicValueEnum::IntValue(iv) = compiled_arg
+                    {
+                        let promoted = self
+                            .builder
+                            .build_signed_int_to_float(iv, self.context.f64_type(), "promote")
+                            .map_err(|e| e.to_string())?;
+                        args.push(promoted.into());
+                        continue;
                     }
 
                     args.push(compiled_arg.into());
@@ -4795,7 +7847,7 @@ impl<'ctx> CodeGen<'ctx> {
         op: &BinaryOp,
         left: BasicValueEnum<'ctx>,
         right: BasicValueEnum<'ctx>,
-        result_type: &Type,
+        _result_type: &Type,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         match (left, right) {
             (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) => {
@@ -4900,14 +7952,50 @@ impl<'ctx> CodeGen<'ctx> {
                     .builder
                     .build_signed_int_to_float(l, self.context.f64_type(), "itof")
                     .map_err(|e| e.to_string())?;
-                self.compile_binary_op(op, l_float.into(), r.into(), result_type)
+                self.compile_binary_op(op, l_float.into(), r.into(), _result_type)
             }
             (BasicValueEnum::FloatValue(l), BasicValueEnum::IntValue(r)) => {
                 let r_float = self
                     .builder
                     .build_signed_int_to_float(r, self.context.f64_type(), "itof")
                     .map_err(|e| e.to_string())?;
-                self.compile_binary_op(op, l.into(), r_float.into(), result_type)
+                self.compile_binary_op(op, l.into(), r_float.into(), _result_type)
+            }
+            // Text comparison: two string pointers compared with strcmp.
+            (BasicValueEnum::PointerValue(l), BasicValueEnum::PointerValue(r)) => {
+                let strcmp = self.module.get_function("strcmp").unwrap_or_else(|| {
+                    let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let i32_type = self.context.i32_type();
+                    let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                    self.module.add_function("strcmp", fn_type, None)
+                });
+                let cmp = self
+                    .builder
+                    .build_call(strcmp, &[l.into(), r.into()], "strcmp")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value();
+                let cmp = match cmp {
+                    ValueKind::Basic(v) => v.into_int_value(),
+                    _ => return Err("strcmp returned void".to_string()),
+                };
+                let zero = self.context.i32_type().const_zero();
+                let result = match op {
+                    BinaryOp::Equal => self
+                        .builder
+                        .build_int_compare(inkwell::IntPredicate::EQ, cmp, zero, "streq")
+                        .map_err(|e| e.to_string())?,
+                    BinaryOp::NotEqual => self
+                        .builder
+                        .build_int_compare(inkwell::IntPredicate::NE, cmp, zero, "strne")
+                        .map_err(|e| e.to_string())?,
+                    _ => {
+                        return Err(
+                            "Text values can only be compared with 'is equal to' or 'is not equal to'"
+                                .to_string(),
+                        );
+                    }
+                };
+                Ok(result.into())
             }
             _ => Err("Unsupported operand types for binary operation".to_string()),
         }
@@ -4983,12 +8071,30 @@ impl<'ctx> CodeGen<'ctx> {
             Type::Int => self.context.i64_type().into(),
             Type::Float => self.context.f64_type().into(),
             Type::Bool => self.context.bool_type().into(),
-            Type::Text => self.context.ptr_type(inkwell::AddressSpace::default()).into(),
-            Type::Class(_) => self.context.ptr_type(inkwell::AddressSpace::default()).into(),
-            Type::List(_) => self.context.ptr_type(inkwell::AddressSpace::default()).into(),
-            Type::Dict(_, _) => self.context.ptr_type(inkwell::AddressSpace::default()).into(),
-            Type::Tuple(_) => self.context.ptr_type(inkwell::AddressSpace::default()).into(),
-            Type::Set(_) => self.context.ptr_type(inkwell::AddressSpace::default()).into(),
+            Type::Text => self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into(),
+            Type::Class(_) => self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into(),
+            Type::List(_) => self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into(),
+            Type::Dict(_, _) => self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into(),
+            Type::Tuple(_) => self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into(),
+            Type::Set(_) => self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into(),
             Type::Void => self.context.i64_type().into(), // shouldn't be used as value type
             Type::Inferred => unreachable!("Type::Inferred should be resolved before codegen"),
         }

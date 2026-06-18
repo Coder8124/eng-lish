@@ -2,7 +2,7 @@ use beginner.
 
 To square x:
     let result be a standard number with value x.
-    Multiply x to result.
+    Multiply result by x.
     Give back result.
 End.
 

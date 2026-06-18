@@ -1,9 +1,18 @@
 /target
 
+# Root-level compiled test binaries
+/test_*
+/test_comments
+/test_escapes
+/test_multi_if
+/test_singlevar
+/test_reserved
+
 # Compiled executables
 /arrays
 /beginner_greeting
 /beginner_squares
+/classes
 /engine
 /fibonacci
 /fizzbuzz
@@ -18,3 +27,6 @@
 examples/binaries/*
 !examples/binaries/.gitkeep
 *.o
+
+# Generated chart output
+*.html

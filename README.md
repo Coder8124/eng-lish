@@ -2,29 +2,12 @@
 
 **A compiled programming language that reads like English.**
 
-Write code the way you think — in plain, readable sentences. No symbols to memorize, no syntax to look up.
+Write code the way you think — in plain, readable sentences. No symbols to memorize, no syntax to look up. eng-lish compiles to native machine code via LLVM, so it's readable *and* fast.
 
 ```
 let message be a text with value "Hello, World!".
 output message.
 ```
-
----
-
-## Why eng-lish?
-
-Most languages prioritize brevity over clarity. eng-lish takes the opposite approach: **code should be readable by anyone**, even those who have never programmed before.
-
-```
-let age be a standard number with value 25.
-
-If age is greater than 18 then
-    output "You can vote!".
-otherwise
-    output "Too young to vote.".
-```
-
-eng-lish compiles to native machine code via LLVM — so it's readable *and* fast.
 
 ---
 
@@ -42,10 +25,10 @@ cd eng-lish
 cargo install --path .
 ```
 
-### Compile and run a program
+### Compile and run
 ```bash
 englishc examples/hello.eng
-./hello
+./examples/binaries/hello
 ```
 
 ### Print LLVM IR (for debugging)
@@ -55,7 +38,7 @@ englishc examples/hello.eng --ir
 
 ---
 
-## Language Guide
+## Quick Tour
 
 ### Variables
 
@@ -76,60 +59,51 @@ let isStudent be a boolean with value true.
 | `boolean` | `true` / `false` |
 | `list of <type>` | Typed array |
 
-### Output
-
-```
-output "Hello!".
-output age.
-```
-
 ### Arithmetic
 
-**Compound assignment** (modifies in place):
+**Infix operators** (use in any expression):
+```
+let area be a standard number with value width * height.
+let average be a decimal with value total / count.
+let distance be a standard number with value end - start.
+let total be a standard number with value price + tax.
+```
+
+**Compound assignment** (modifies a variable in place):
 ```
 let x be a standard number with value 10.
 
-Add 5 to x.
-Subtract 2 from x.
-Multiply x by 3.
-Divide x by 4.
+Add 5 to x.        Note: x = x + 5
+Subtract 2 from x. Note: x = x - 2
+Multiply x by 3.   Note: x = x * 3
+Divide x by 4.     Note: x = x / 4
 ```
 
-**Expressions:**
+**Remainder and quotient:**
 ```
-output remainder x by 3.
-output quotient x by 3.
-```
-
-### Comparisons and Logic
-
-```
-If x is greater than 5 then
-    output "big".
-
-If x is less than 5 then
-    output "small".
-
-If x is equal to 5 then
-    output "just right".
-
-If x is not equal to 0 then
-    output "not zero".
+output the remainder of x divided by 3.
+output the quotient of x divided by 3.
 ```
 
+### Comments
+
 ```
-If sunny and warm then
-    output "Perfect day!".
-
-If sunny or warm then
-    output "Nice enough.".
-
-If not sunny then
-    output "Bring an umbrella.".
+Note: this is a comment — it is ignored by the compiler.
+output "Hello!". Note: inline comment after a statement.
 ```
 
-### If-Else Chains
+### Output and Input
 
+```
+output "Enter your name:".
+let name be a text with value the result of readLine.
+output "Hello, ".
+output name.
+```
+
+### Control Flow
+
+**If/otherwise** — requires `End.` to close:
 ```
 let score be a standard number with value 85.
 
@@ -141,9 +115,18 @@ otherwise if score is greater than 70 then
     output "C".
 otherwise
     output "F".
+End.
 ```
 
-### Loops
+Multiple statements per branch are supported:
+```
+If score is greater than 90 then
+    output "Great job!".
+    output "You got an A.".
+otherwise
+    output "Keep practicing.".
+End.
+```
 
 **For loop:**
 ```
@@ -164,10 +147,12 @@ End.
 **Break and continue:**
 ```
 For each i from 1 to 100,
-    If remainder i by 2 is equal to 0 then
+    If the remainder of i divided by 2 is equal to 0 then
         skip.
+    End.
     If i is greater than 9 then
         stop.
+    End.
     output i.
 End.
 ```
@@ -176,9 +161,8 @@ End.
 
 ```
 To double with a standard number x returning a standard number:
-    let result be a standard number with value x.
-    Multiply result by 2.
-    Give back result.
+    let doubled be a standard number with value x * 2.
+    Give back doubled.
 End.
 
 let answer be a standard number with value the result of double with 21.
@@ -233,6 +217,70 @@ let extended be a list of standard number with value the result of append with n
 let flipped be a list of standard number with value the result of reverse with numbers.
 ```
 
+### File I/O
+
+```
+let ok be a boolean with value the result of writeFile with "notes.txt" and "Buy milk.".
+
+If ok then
+    output "Saved!".
+    let contents be a text with value the result of readFile with "notes.txt".
+    output contents.
+otherwise
+    output "Could not save file.".
+End.
+```
+
+---
+
+## Beginner Mode
+
+Add `use beginner.` at the top of your program to enable a friendlier experience for new programmers:
+
+- Function calls use a simpler `name of arg` syntax instead of `the result of name with arg`
+- Error messages say `Oops! Line 5 has a problem...` instead of compiler jargon
+- Type inference relaxes in several places
+
+```
+use beginner.
+
+output "What is your name?".
+let name be a text with value the result of readLine.
+output combine of "Hello, " and name.
+```
+
+---
+
+## Data Science
+
+eng-lish has built-in support for statistics, machine learning, and charting — without leaving the language.
+
+### Plotting
+
+```
+use "numeric".
+
+let data be a list of decimal with value [2.0, 4.0, 8.0, 16.0, 32.0].
+plot data as a line chart titled "Growth" to "chart.html".
+```
+
+Supported chart types: `line chart`, `bar chart`, `scatter plot`, `histogram`.
+
+### Neural Networks
+
+```
+use "neural".
+
+let w1 be a list of decimal with value the result of initWeights with 2 and 4.
+let b1 be a list of decimal with value the result of initBiases with 4.
+let input be a list of decimal with value [0.5, 0.8].
+
+let hidden be a list of decimal with value the result of linearLayer with w1 and b1 and input and 4 and 2.
+let hiddenOut be a list of decimal with value the result of sigmoidActivation with hidden.
+```
+
+See `packages/neural/README.md` for the full API.
+
 ---
 
 ## Standard Library
@@ -246,11 +294,10 @@ let flipped be a list of standard number with value the result of reverse with n
 | `power` | Exponentiation |
 | `floor` / `ceiling` / `round` | Rounding |
 | `sine` / `cosine` / `tangent` | Trig |
-| `arcSine` / `arcCosine` / `arcTangent` | Inverse trig |
 | `naturalLog` / `logarithm` / `exponential` | Logarithms |
-| `minimum` / `maximum` | Min/Max of two values |
+| `minimum` / `maximum` | Min/max of two values |
 | `random` | Random decimal 0.0–1.0 |
-| `randomBetween` | Random integer in range |
+| `randomBetween` | Random integer in a range |
 
 ### Text
 
@@ -262,6 +309,8 @@ let flipped be a list of standard number with value the result of reverse with n
 | `uppercase` / `lowercase` | Case conversion |
 | `contains` | Substring check |
 
+Escape sequences in strings: `\"`, `\n`, `\t`, `\\`.
+
 ### Input / Output
 
 | Function | Description |
@@ -270,6 +319,7 @@ let flipped be a list of standard number with value the result of reverse with n
 | `readNumber` | Read an integer from stdin |
 | `readFile` | Read entire file as text |
 | `writeFile` | Write text to a file |
+| `sleep` | Pause for N milliseconds |
 
 ### Conversion
 
@@ -279,17 +329,16 @@ let flipped be a list of standard number with value the result of reverse with n
 | `textToDecimal` | Parse decimal from text |
 | `numberToText` | Integer to text |
 | `decimalToText` | Decimal to text |
-| `sleep` | Pause for N milliseconds |
 
 ### Arrays
 
 | Function | Description |
 |---|---|
-| `zeros` / `ones` | Create array of zeros or ones |
+| `zeros` / `ones` | Create float array of zeros or ones |
 | `range` | Create integer range array |
-| `arrayLength` | Length of an array |
-| `sum` / `mean` | Aggregate an array |
-| `arrayMin` / `arrayMax` | Min/max of an array |
+| `arrayLength` / `vectorLength` | Length of an int or float array |
+| `sum` / `mean` | Aggregate a float array |
+| `arrayMin` / `arrayMax` | Min/max of a float array |
 | `append` / `reverse` | Manipulate arrays |
 | `standardDeviation` / `variance` | Statistics |
 | `correlation` | Pearson correlation |
@@ -297,7 +346,7 @@ let flipped be a list of standard number with value the result of reverse with n
 
 ---
 
-## Package Manager
+## Packages
 
 eng-lish has a built-in package manager. Packages are `.eng` files — just functions and classes your program can `use`.
 
@@ -305,68 +354,30 @@ eng-lish has a built-in package manager. Packages are `.eng` files — just func
 
 ```
 use "numeric".
-use "geometry".
 
 output the result of factorial with 10.
-output the result of circleArea with 5.0.
+output the result of fibonacci with 15.
+output the result of isPrime with 17.
 ```
 
-### Installing a package
+### Installing a package from GitHub
 
 ```bash
 englishc install https://github.com/user/eng-lish-somepackage
 ```
 
-This clones the repo into `~/.eng-lish/packages/`. From then on, `use "somepackage".` resolves automatically.
-
-### Package resolution order
-
-1. `<same directory as source file>/<name>.eng`
-2. `./packages/<name>/<name>.eng` (project-local packages)
-3. `~/.eng-lish/packages/<name>/<name>.eng` (installed packages)
-4. `~/.eng-lish/packages/<name>/main.eng`
+Clones the repo into `~/.eng-lish/packages/`. After that, `use "somepackage".` resolves automatically.
 
 ### Bundled packages
 
-The repo ships three packages under `packages/`:
-
-**`numeric`** — inspired by `<numeric>` and `<cstdlib>`
-```
-use "numeric".
-
-output the result of factorial with 10.
-output the result of fibonacci with 15.
-output the result of gcd with 48 and 18.
-output the result of lcm with 4 and 6.
-output the result of isPrime with 17.
-output the result of sumUpTo with 100.
-```
-
-**`algorithm`** — inspired by `<algorithm>`
-```
-use "algorithm".
-
-let data be a list of standard number with value [3, 7, 1, 9, 4].
-
-output the result of clamp with 15 and 0 and 10.
-output the result of linearSearch with data and 9.
-output the result of countOccurrences with data and 3.
-output the result of maxIndex with data.
-```
-
-**`geometry`** — inspired by `<cmath>` + computational geometry
-```
-use "geometry".
-
-output the result of distance with 0.0 and 0.0 and 3.0 and 4.0.
-output the result of hypotenuse with 3.0 and 4.0.
-output the result of circleArea with 5.0.
-output the result of triangleArea with 6.0 and 4.0.
-output the result of degreesToRadians with 90.0.
-
-let p be a Point created with 0.0 and 0.0.
-output the result of asking p to distanceTo with 3.0 and 4.0.
-```
+| Package | What it provides |
+|---|---|
+| `numeric` | `factorial`, `fibonacci`, `gcd`, `lcm`, `isPrime`, `sumUpTo` |
+| `algorithm` | `clamp`, `linearSearch`, `countOccurrences`, `maxIndex`, `minIndex` |
+| `geometry` | `distance`, `hypotenuse`, `circleArea`, `triangleArea`, `degreesToRadians`, `Point` class |
+| `math` | `sign`, `absoluteInt`, `isEven`, `isOdd`, `digitCount`, `intPow` |
+| `strings` | `repeat`, `padLeft`, `padRight`, `isEmpty` |
+| `neural` | `initWeights`, `initBiases`, `linearLayer`, `sigmoidActivation`, `reluActivation`, `softmaxActivation`, `mseError`, `updateWeights` |
 
 ---
 
@@ -376,18 +387,19 @@ output the result of asking p to distanceTo with 3.0 and 4.0.
 
 ```
 For each i from 1 to 100,
-    If remainder i by 15 is equal to 0 then
+    If the remainder of i divided by 15 is equal to 0 then
         output "FizzBuzz".
-    otherwise if remainder i by 3 is equal to 0 then
+    otherwise if the remainder of i divided by 3 is equal to 0 then
         output "Fizz".
-    otherwise if remainder i by 5 is equal to 0 then
+    otherwise if the remainder of i divided by 5 is equal to 0 then
         output "Buzz".
     otherwise
         output i.
+    End.
 End.
 ```
 
-### Guessing game
+### Guessing Game
 
 ```
 let secret be a standard number with value the result of randomBetween with 1 and 100.
@@ -405,27 +417,13 @@ While guess is not equal to secret,
         output "Too high!".
     otherwise
         output "Correct!".
+    End.
 End.
-```
-
-### File I/O
-
-```
-let ok be a boolean with value the result of writeFile with "notes.txt" and "Buy milk.".
-
-If ok then
-    output "Saved!".
-    let contents be a text with value the result of readFile with "notes.txt".
-    output contents.
-otherwise
-    output "Could not save file.".
 ```
 
 ---
 
 ## How It Works
-
-eng-lish compiles to native machine code via LLVM:
 
 ```
 .eng source
@@ -442,7 +440,6 @@ eng-lish compiles to native machine code via LLVM:
 ## Contributing
 
 Contributions welcome. Areas of interest:
-
 - More packages
 - Better error messages
 - Language server (LSP) support
@@ -451,7 +448,6 @@ Contributions welcome. Areas of interest:
 ---
 
 ## License
-
 All Rights Reserved.
 
 ---

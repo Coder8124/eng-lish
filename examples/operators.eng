@@ -2,8 +2,8 @@ let x be a standard number with value 10.
 let y be a standard number with value 3.
 
 output "Testing remainder and quotient:".
-output remainder x by y.
-output quotient x by y.
+output the remainder of x divided by y.
+output the quotient of x divided by y.
 
 output "Testing negative:".
 output negative 42.

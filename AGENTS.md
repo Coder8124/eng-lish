@@ -1,4 +1,4 @@
-# Claude Conventions for eng-lish
+# Codex Conventions for eng-lish
 
 ## What we're building
 
@@ -42,7 +42,7 @@ docs/                 # Language documentation (see Documentation section)
 
 ## Documentation requirements
 
-**Claude must create and maintain documentation** so the language is ready to ship at any time:
+**Codex must create and maintain documentation** so the language is ready to ship at any time:
 
 - Every new language feature needs a corresponding doc in `docs/language-reference/` as a Markdown file (e.g., `beginner-mode.md`, `functions.md`, `loops.md`).
 - Every new package needs a `README.md` inside its package directory describing its functions, types, and example usage.
@@ -54,10 +54,12 @@ docs/                 # Language documentation (see Documentation section)
 
 - Only use language constructs that are verified to exist in the parser — don't write `.eng` examples using syntax that hasn't been implemented.
 - `While` loops require `End.` to close (multi-statement body, same as `For each`).
-- Compound assignment syntax: `Add X to Y.` / `Subtract X from Y.` / `Multiply X to Y.` / `Divide X from Y.` — NOT `Multiply Y by X`.
+- Compound assignment syntax (natural English, recommended): `Add X to Y.` / `Subtract X from Y.` / `Multiply Y by X.` / `Divide Y by X.`. The legacy forms `Multiply X to Y.` / `Divide X from Y.` still parse but should not be used in new code.
+- Remainder/quotient: prefer `the remainder of X divided by Y` and `the quotient of X divided by Y`. The short forms `remainder X by Y` / `quotient X by Y` still parse.
+- Comparisons: `is at least` (>=) and `is at most` (<=) are available alongside `is greater than or equal to` / `is less than or equal to`.
 - Single-letter variable names (e.g., `a`, `b`) conflict with the article token — use descriptive names.
 - `Type::Inferred` must never reach codegen — always call `analyzer.patch_program_types(&mut program)` before code generation.
-- Never add `Co-Authored-By` or any Claude attribution to commit messages.
+- Never add `Co-Authored-By` or any Codex attribution to commit messages.
 
 ## Commits
 
@@ -80,3 +82,10 @@ docs/                 # Language documentation (see Documentation section)
 ## General
 
 - Don't rewrite existing files unless explicitly asked.
+
+YOU MUST PRIOITIZE DEVELOPER CREDIT, DON'T CREDIT YOURSELF ANYWHERE
+MAKE SURE TO COMMIT EVERY SMALL THING TO BOOST OUR COMMIT COUNT, BUT ONLY AFTER THE DEVELOPER GIVES YOU THE GO AHEAD
+
+COMPACT AND REFRESH AT EVERY 35K TOKENS
+
+

@@ -1,0 +1,29 @@
+To printBorder with a standard number width returning nothing:
+    let dashes be a text with value the result of repeatText with "-" and width.
+    let border be a text with value the result of combine with "#" and dashes.
+    Set border to the result of combine with border and "#".
+    output border.
+End.
+
+To printRow with a text content returning nothing:
+    let row be a text with value the result of combine with "| " and content.
+    Set row to the result of combine with row and " |".
+    output row.
+End.
+
+To centerText with a text s and a standard number width returning a text:
+    let textLen be a standard number with value the result of lengthOf with s.
+    let padding be a standard number with value width.
+    Subtract textLen from padding.
+    If padding is at most 0 then
+        Give back s.
+    End.
+    let leftPad be a standard number with value the quotient of padding divided by 2.
+    let rightPad be a standard number with value padding.
+    Subtract leftPad from rightPad.
+    let result be a text with value the result of repeatText with " " and leftPad.
+    Set result to the result of combine with result and s.
+    let rightSpaces be a text with value the result of repeatText with " " and rightPad.
+    Set result to the result of combine with result and rightSpaces.
+    Give back result.
+End.

@@ -1,1 +1,9 @@
+To double with a standard number number returning a standard number:
+    let total be a standard number with value 0.
+    Add number to total.
+    Add number to total.
+    Give back total.
+End.
+
 let y be a standard number with value the result of double with 5.
+output y.

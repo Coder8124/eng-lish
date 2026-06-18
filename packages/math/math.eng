@@ -1,40 +1,47 @@
 To sign with a standard number n returning a standard number:
     If n is greater than 0 then
         Give back 1.
+    End.
     If n is less than 0 then
         Give back negative 1.
+    End.
     Give back 0.
 End.
 
 To absoluteInt with a standard number n returning a standard number:
     If n is less than 0 then
         Give back negative n.
+    End.
     Give back n.
 End.
 
 To isEven with a standard number n returning a boolean:
-    let r be a standard number with value remainder n by 2.
+    let r be a standard number with value the remainder of n divided by 2.
     If r is equal to 0 then
         Give back true.
+    End.
     Give back false.
 End.
 
 To isOdd with a standard number n returning a boolean:
-    let r be a standard number with value remainder n by 2.
+    let r be a standard number with value the remainder of n divided by 2.
     If r is not equal to 0 then
         Give back true.
+    End.
     Give back false.
 End.
 
 To digitCount with a standard number n returning a standard number:
     If n is equal to 0 then
         Give back 1.
+    End.
     let m be a standard number with value n.
     If m is less than 0 then
         Multiply m by negative 1.
+    End.
     let count be a standard number with value 0.
     While m is greater than 0,
-        Set m to quotient m by 10.
+        Set m to the quotient of m divided by 10.
         Add 1 to count.
     End.
     Give back count.
