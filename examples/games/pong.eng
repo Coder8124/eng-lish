@@ -1,0 +1,187 @@
+use "game".
+
+Note: ===================== MOD ZONE =====================
+Note: Change these numbers to change how Pong plays.
+let PLAY_WIDTH be a standard number with value 18.
+let PLAY_HEIGHT be a standard number with value 10.
+let PADDLE_HEIGHT be a standard number with value 3.
+let WIN_SCORE be a standard number with value 5.
+let CPU_SPEED be a standard number with value 1.
+Note: ====================================================
+
+Note: Keep a number inside a low..high range.
+To clampValue with a standard number num and a standard number low and a standard number high returning a standard number:
+    If num is less than low then
+        Give back low.
+    End.
+    If num is greater than high then
+        Give back high.
+    End.
+    Give back num.
+End.
+
+Note: Does a paddle that starts at 'top' and is 'height' tall cover this row?
+To paddleCovers with a standard number top and a standard number height and a standard number row returning a standard number:
+    let bottom be a standard number with value top.
+    Add height to bottom.
+    If row is at least top and row is less than bottom then
+        Give back 1.
+    End.
+    Give back 0.
+End.
+
+Note: ----- Handy measurements derived from the mod zone -----
+let maxRow be a standard number with value PLAY_HEIGHT.
+Subtract 1 from maxRow.
+let rightCol be a standard number with value PLAY_WIDTH.
+Subtract 1 from rightCol.
+let maxPaddleTop be a standard number with value PLAY_HEIGHT.
+Subtract PADDLE_HEIGHT from maxPaddleTop.
+let centerX be a standard number with value the quotient of PLAY_WIDTH divided by 2.
+let centerY be a standard number with value the quotient of PLAY_HEIGHT divided by 2.
+
+Note: ----- Game state -----
+let leftPaddle be a standard number with value 3.
+let rightPaddle be a standard number with value 3.
+let ballX be a standard number with value centerX.
+let ballY be a standard number with value centerY.
+let ballDX be a standard number with value negative 1.
+let ballDY be a standard number with value 1.
+let playerScore be a standard number with value 0.
+let cpuScore be a standard number with value 0.
+let playing be a standard number with value 1.
+
+output "=================================".
+output "             PONG".
+output "=================================".
+output "You are the [ paddle on the left.".
+output "The computer is the ] paddle on the right.".
+output "Each turn type: up, down, stay, or quit.".
+let introLine be a text with value "First player to score ".
+Set introLine to the result of combine with introLine and the result of numberToText with WIN_SCORE.
+Set introLine to the result of combine with introLine and " points wins!".
+output introLine.
+
+While playing is equal to 1,
+    Note: ----- Draw the court -----
+    Call printBorder with PLAY_WIDTH + 2.
+    let rowIndex be a standard number with value 0.
+    While rowIndex is less than PLAY_HEIGHT,
+        let leftHit be a standard number with value the result of paddleCovers with leftPaddle and PADDLE_HEIGHT and rowIndex.
+        let rightHit be a standard number with value the result of paddleCovers with rightPaddle and PADDLE_HEIGHT and rowIndex.
+        let lineText be a text with value "".
+        let colIndex be a standard number with value 0.
+        While colIndex is less than PLAY_WIDTH,
+            let cellGlyph be a text with value " ".
+            If rowIndex is equal to ballY and colIndex is equal to ballX then
+                Set cellGlyph to "O".
+            otherwise if colIndex is equal to 0 and leftHit is equal to 1 then
+                Set cellGlyph to "[".
+            otherwise if colIndex is equal to rightCol and rightHit is equal to 1 then
+                Set cellGlyph to "]".
+            End.
+            Set lineText to the result of combine with lineText and cellGlyph.
+            Add 1 to colIndex.
+        End.
+        Call printRow with lineText.
+        Add 1 to rowIndex.
+    End.
+    Call printBorder with PLAY_WIDTH + 2.
+    let scoreLine be a text with value "You: ".
+    Set scoreLine to the result of combine with scoreLine and the result of numberToText with playerScore.
+    Set scoreLine to the result of combine with scoreLine and "   Computer: ".
+    Set scoreLine to the result of combine with scoreLine and the result of numberToText with cpuScore.
+    output scoreLine.
+    output "Your move:".
+    let command be a text with value the result of readLine.
+
+    If command is equal to "quit" then
+        Set playing to 0.
+    otherwise if command is equal to "up" then
+        Subtract 1 from leftPaddle.
+    otherwise if command is equal to "down" then
+        Add 1 to leftPaddle.
+    otherwise if command is equal to "stay" then
+        Add 0 to leftPaddle.
+    otherwise
+        output "Type up, down, stay, or quit.".
+    End.
+    Set leftPaddle to the result of clampValue with leftPaddle and 0 and maxPaddleTop.
+
+    Note: ----- Computer follows the ball -----
+    If playing is equal to 1 then
+        let paddleMid be a standard number with value rightPaddle.
+        Add 1 to paddleMid.
+        If ballY is greater than paddleMid then
+            Add CPU_SPEED to rightPaddle.
+        otherwise if ballY is less than paddleMid then
+            Subtract CPU_SPEED from rightPaddle.
+        End.
+        Set rightPaddle to the result of clampValue with rightPaddle and 0 and maxPaddleTop.
+    End.
+
+    Note: ----- Move the ball -----
+    If playing is equal to 1 then
+        Note: Bounce off the top and bottom walls.
+        let nextY be a standard number with value ballY.
+        Add ballDY to nextY.
+        If nextY is less than 0 then
+            Set ballDY to 0 - ballDY.
+        End.
+        If nextY is greater than maxRow then
+            Set ballDY to 0 - ballDY.
+        End.
+        Add ballDY to ballY.
+        Set ballY to the result of clampValue with ballY and 0 and maxRow.
+
+        Note: Move sideways, checking the paddles and the goals.
+        let nextX be a standard number with value ballX.
+        Add ballDX to nextX.
+        If nextX is at most 0 then
+            let leftSave be a standard number with value the result of paddleCovers with leftPaddle and PADDLE_HEIGHT and ballY.
+            If leftSave is equal to 1 then
+                Set ballDX to 1.
+                Set ballX to 1.
+                output "You returned the ball!".
+            otherwise
+                Add 1 to cpuScore.
+                output "The computer scores a point!".
+                Set ballX to centerX.
+                Set ballY to centerY.
+                Set ballDX to 1.
+            End.
+        otherwise if nextX is at least rightCol then
+            let rightSave be a standard number with value the result of paddleCovers with rightPaddle and PADDLE_HEIGHT and ballY.
+            If rightSave is equal to 1 then
+                Set ballDX to negative 1.
+                Set ballX to rightCol - 1.
+                output "The computer returns it!".
+            otherwise
+                Add 1 to playerScore.
+                output "You score a point!".
+                Set ballX to centerX.
+                Set ballY to centerY.
+                Set ballDX to negative 1.
+            End.
+        otherwise
+            Set ballX to nextX.
+        End.
+    End.
+
+    Note: ----- Did anyone win? -----
+    If playerScore is at least WIN_SCORE then
+        Set playing to 0.
+    End.
+    If cpuScore is at least WIN_SCORE then
+        Set playing to 0.
+    End.
+End.
+
+output "=================================".
+If playerScore is at least WIN_SCORE then
+    output "YOU WIN! Nice reflexes.".
+otherwise if cpuScore is at least WIN_SCORE then
+    output "The computer wins this time. Try again!".
+otherwise
+    output "Thanks for playing Pong!".
+End.

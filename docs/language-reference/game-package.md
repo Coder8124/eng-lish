@@ -88,5 +88,6 @@ Open these in `examples/games/` and run them:
 
 - **`block_world.eng`** — walk around an 8×8 world with `north`, `south`, `east`, `west`. `mine` to chop trees and dig stone.
 - **`kart_race.eng`** — race three computer karts. `gas` to drive, `item` to use what you are holding.
+- **`pong.eng`** — play Pong against the computer. Each turn type `up`, `down`, `stay`, or `quit`. Slide your `[` paddle to bounce the `O` ball back; first to 5 points wins.
 
-Both files start with a **MOD ZONE**: a block of numbers you can change to make the game your own (bigger maps, longer tracks, better luck with items). Each game also leaves one spot for you to write your own code — a crafting recipe in Block World, and the Blue Shell item in Kart Race.
+Every file starts with a **MOD ZONE**: a block of numbers you can change to make the game your own (bigger maps, longer tracks, a taller paddle, a higher score to win). Block World and Kart Race also leave one spot for you to write your own code — a crafting recipe in Block World, and the Blue Shell item in Kart Race.
