@@ -7644,14 +7644,20 @@ impl<'ctx> CodeGen<'ctx> {
                         .map_err(|e| e.to_string())?
                 };
 
-                // Load the element (assume i64 for now, could be more sophisticated)
+                // Load the element using the collection's element type so floats
+                // come back as f64 (not their raw i64 bit pattern).
+                let elem_type = match self.infer_type(collection) {
+                    Type::List(inner) => *inner,
+                    _ => Type::Int,
+                };
                 let typed_ptr = self
                     .builder
                     .build_pointer_cast(elem_ptr, ptr_type, "typed_elem_ptr")
                     .map_err(|e| e.to_string())?;
+                let load_type = self.get_llvm_type(&elem_type);
                 let val = self
                     .builder
-                    .build_load(i64_type, typed_ptr, "elem_val")
+                    .build_load(load_type, typed_ptr, "elem_val")
                     .map_err(|e| e.to_string())?;
 
                 Ok(val)
