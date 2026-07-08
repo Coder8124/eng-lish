@@ -38,6 +38,7 @@ pub enum Token {
     TypeList,
 
     #[token("lock and key list", ignore(case))]
+    #[token("dictionary", ignore(case))]
     TypeDict,
 
     #[token("fixed list", ignore(case))]
@@ -251,6 +252,9 @@ pub enum Token {
 
     #[token("set", ignore(case))]
     Set,
+
+    #[token("remove", ignore(case))]
+    Remove,
 
     #[token("use", ignore(case))]
     Use,

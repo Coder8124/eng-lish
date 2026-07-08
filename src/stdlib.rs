@@ -23,6 +23,7 @@ pub fn get_all_builtins() -> Vec<BuiltinFunction> {
     builtins.extend(get_io_builtins());
     builtins.extend(get_utility_builtins());
     builtins.extend(get_array_builtins());
+    builtins.extend(get_dict_builtins());
     builtins.extend(get_ml_builtins());
     builtins
 }
@@ -376,6 +377,47 @@ pub fn get_array_builtins() -> Vec<BuiltinFunction> {
             names: vec!["reverse"],
             parameters: vec![("arr", Type::List(Box::new(Type::Int)))],
             return_type: Type::List(Box::new(Type::Int)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+    ]
+}
+
+pub fn get_dict_builtins() -> Vec<BuiltinFunction> {
+    let dict = || Type::Dict(Box::new(Type::Text), Box::new(Type::Inferred));
+    vec![
+        BuiltinFunction {
+            names: vec!["newDictionary", "newDict"],
+            parameters: vec![],
+            return_type: Type::Dict(Box::new(Type::Text), Box::new(Type::Inferred)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["hasKey", "dictHas"],
+            parameters: vec![("dict", dict()), ("key", Type::Text)],
+            return_type: Type::Bool,
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["removeKey", "dictRemove"],
+            parameters: vec![("dict", dict()), ("key", Type::Text)],
+            return_type: Type::Dict(Box::new(Type::Text), Box::new(Type::Inferred)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["keysOf", "dictKeys"],
+            parameters: vec![("dict", dict())],
+            return_type: Type::List(Box::new(Type::Text)),
+            c_function: None,
+            accepts_int_as_float: false,
+        },
+        BuiltinFunction {
+            names: vec!["sizeOf", "dictSize"],
+            parameters: vec![("dict", dict())],
+            return_type: Type::Int,
             c_function: None,
             accepts_int_as_float: false,
         },

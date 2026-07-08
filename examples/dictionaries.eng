@@ -1,0 +1,36 @@
+Note: Dictionaries store values under text keys, like a real dictionary stores definitions under words.
+
+Let ages be a new dictionary.
+Set ages["Alice"] to 12.
+Set ages["Bob"] to 14.
+
+output ages["Alice"].
+output ages["Bob"].
+
+Note: Setting an existing key replaces its value.
+Set ages["Alice"] to 13.
+output ages["Alice"].
+
+Note: sizeOf counts the entries, hasKey checks if a key exists.
+output the result of sizeOf with ages.
+output the result of hasKey with ages and "Bob".
+
+Note: Remove takes an entry out.
+Remove "Bob" from ages.
+output the result of hasKey with ages and "Bob".
+
+Note: Dictionaries can hold decimals or text too.
+Let prices be a new dictionary from text to decimal.
+Set prices["apple"] to 1.5.
+Set prices["banana"] to 0.75.
+output prices["apple"] + prices["banana"].
+
+Let colors be a new dictionary from text to text.
+Set colors["sky"] to "blue".
+output colors["sky"].
+
+Note: keysOf gives you every key as a list of text.
+Let fruit be a list of text with value the result of keysOf with prices.
+For each i from 0 to 1,
+    output fruit[i].
+End.

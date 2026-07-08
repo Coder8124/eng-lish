@@ -14,6 +14,7 @@ Welcome to the eng-lish language reference. Each page covers one part of the lan
 | Loops | `For each i from 0 to n,` and `While condition,` — repeat actions |
 | Classes | `Define a kind called Name:` — group data and behavior together |
 | [Lists](lists.md) | `[1, 2, 3]`, reading `scores[0]`, and changing items with `Set scores[0] to ...` |
+| [Dictionaries](dictionaries.md) | `Let ages be a new dictionary.`, `Set ages["Alice"] to 12.`, `Remove "Alice" from ages.`, plus `hasKey` / `keysOf` / `sizeOf` |
 | Strings | `"text"` with escape sequences `\"`, `\n`, `\t`, `\\`; compare with `is equal to` |
 | File I/O | `readFile` / `writeFile` — read and write files |
 

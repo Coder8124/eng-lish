@@ -86,6 +86,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.declare_printf();
         self.declare_malloc();
         self.declare_builtin_functions()?;
+        self.build_dict_builtins()?;
 
         // First pass: declare class struct types
         for class in &program.classes {
@@ -122,6 +123,660 @@ impl<'ctx> CodeGen<'ctx> {
         let i8_ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
         let printf_type = i32_type.fn_type(&[i8_ptr_type.into()], true);
         self.printf_fn = Some(self.module.add_function("printf", printf_type, None));
+    }
+
+    // ========== Dictionary Runtime ==========
+    // Layout mirrors lists: user code holds a data pointer whose header
+    // {length, capacity} sits 16 bytes before it. Each entry is 16 bytes:
+    // the key (a text pointer stored as i64) followed by the value slot.
+
+    fn build_dict_builtins(&mut self) -> Result<(), String> {
+        let i64_type = self.context.i64_type();
+        let i32_type = self.context.i32_type();
+        let i8_type = self.context.i8_type();
+        let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+        let malloc = self.malloc_fn.ok_or("malloc not declared")?;
+
+        let strcmp = self.module.get_function("strcmp").unwrap_or_else(|| {
+            let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            self.module.add_function("strcmp", fn_type, None)
+        });
+        let memcpy = self.module.get_function("memcpy").unwrap_or_else(|| {
+            let fn_type =
+                ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), i64_type.into()], false);
+            self.module.add_function("memcpy", fn_type, None)
+        });
+
+        let load_len = |cg: &Self,
+                        dict: PointerValue<'ctx>|
+         -> Result<inkwell::values::IntValue<'ctx>, String> {
+            let neg_16 = i64_type.const_int((-16i64) as u64, true);
+            let len_ptr = unsafe {
+                cg.builder
+                    .build_gep(i8_type, dict, &[neg_16], "len_ptr")
+                    .map_err(|e| e.to_string())?
+            };
+            Ok(cg
+                .builder
+                .build_load(i64_type, len_ptr, "len")
+                .map_err(|e| e.to_string())?
+                .into_int_value())
+        };
+
+        let entry_ptr = |cg: &Self,
+                         dict: PointerValue<'ctx>,
+                         idx: inkwell::values::IntValue<'ctx>,
+                         extra: u64,
+                         name: &str|
+         -> Result<PointerValue<'ctx>, String> {
+            let sixteen = i64_type.const_int(16, false);
+            let off = cg
+                .builder
+                .build_int_mul(idx, sixteen, "entry_off")
+                .map_err(|e| e.to_string())?;
+            let off = cg
+                .builder
+                .build_int_add(off, i64_type.const_int(extra, false), "slot_off")
+                .map_err(|e| e.to_string())?;
+            unsafe {
+                cg.builder
+                    .build_gep(i8_type, dict, &[off], name)
+                    .map_err(|e| e.to_string())
+            }
+        };
+
+        let alloc_dict = |cg: &Self,
+                          new_len: inkwell::values::IntValue<'ctx>|
+         -> Result<PointerValue<'ctx>, String> {
+            let sixteen = i64_type.const_int(16, false);
+            let data_size = cg
+                .builder
+                .build_int_mul(new_len, sixteen, "data_size")
+                .map_err(|e| e.to_string())?;
+            let total = cg
+                .builder
+                .build_int_add(data_size, sixteen, "total_size")
+                .map_err(|e| e.to_string())?;
+            let base = cg
+                .builder
+                .build_call(malloc, &[total.into()], "dict_alloc")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let base = match base {
+                ValueKind::Basic(v) => v.into_pointer_value(),
+                _ => return Err("malloc returned void".to_string()),
+            };
+            cg.builder
+                .build_store(base, new_len)
+                .map_err(|e| e.to_string())?;
+            let cap_ptr = unsafe {
+                cg.builder
+                    .build_gep(i8_type, base, &[i64_type.const_int(8, false)], "cap_ptr")
+                    .map_err(|e| e.to_string())?
+            };
+            cg.builder
+                .build_store(cap_ptr, new_len)
+                .map_err(|e| e.to_string())?;
+            unsafe {
+                cg.builder
+                    .build_gep(i8_type, base, &[sixteen], "dict_data")
+                    .map_err(|e| e.to_string())
+            }
+        };
+
+        // --- englang_dictNew() -> ptr ---
+        let dict_new = {
+            let fn_type = ptr_type.fn_type(&[], false);
+            let func = self.module.add_function("englang_dictNew", fn_type, None);
+            let entry = self.context.append_basic_block(func, "entry");
+            self.builder.position_at_end(entry);
+            let data = alloc_dict(self, i64_type.const_int(0, false))?;
+            self.builder
+                .build_return(Some(&data))
+                .map_err(|e| e.to_string())?;
+            func
+        };
+
+        // --- englang_dictFind(dict: ptr, key: ptr) -> i64 (index or -1) ---
+        let dict_find = {
+            let fn_type = i64_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            let func = self.module.add_function("englang_dictFind", fn_type, None);
+            let entry = self.context.append_basic_block(func, "entry");
+            let cond = self.context.append_basic_block(func, "cond");
+            let body = self.context.append_basic_block(func, "body");
+            let inc = self.context.append_basic_block(func, "inc");
+            let found = self.context.append_basic_block(func, "found");
+            let missing = self.context.append_basic_block(func, "missing");
+
+            self.builder.position_at_end(entry);
+            let dict = func.get_nth_param(0).unwrap().into_pointer_value();
+            let key = func.get_nth_param(1).unwrap().into_pointer_value();
+            let len = load_len(self, dict)?;
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(cond)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(cond);
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let in_range = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "in_range")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(in_range, body, missing)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(body);
+            let key_slot_ptr = entry_ptr(self, dict, i, 0, "key_slot_ptr")?;
+            let key_slot = self
+                .builder
+                .build_load(i64_type, key_slot_ptr, "key_slot")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let entry_key = self
+                .builder
+                .build_int_to_ptr(key_slot, ptr_type, "entry_key")
+                .map_err(|e| e.to_string())?;
+            let cmp = self
+                .builder
+                .build_call(strcmp, &[entry_key.into(), key.into()], "cmp")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let cmp = match cmp {
+                ValueKind::Basic(v) => v.into_int_value(),
+                _ => return Err("strcmp returned void".to_string()),
+            };
+            let is_match = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    cmp,
+                    i32_type.const_int(0, false),
+                    "is_match",
+                )
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(is_match, found, inc)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(inc);
+            let next = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(cond)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(found);
+            self.builder
+                .build_return(Some(&i))
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(missing);
+            let neg_one = i64_type.const_int((-1i64) as u64, true);
+            self.builder
+                .build_return(Some(&neg_one))
+                .map_err(|e| e.to_string())?;
+            func
+        };
+
+        let call_find = |cg: &Self,
+                         dict: PointerValue<'ctx>,
+                         key: PointerValue<'ctx>|
+         -> Result<inkwell::values::IntValue<'ctx>, String> {
+            let idx = cg
+                .builder
+                .build_call(dict_find, &[dict.into(), key.into()], "idx")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            match idx {
+                ValueKind::Basic(v) => Ok(v.into_int_value()),
+                _ => Err("dictFind returned void".to_string()),
+            }
+        };
+
+        // --- englang_dictGet(dict: ptr, key: ptr) -> i64 (0 if missing) ---
+        {
+            let fn_type = i64_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            let func = self.module.add_function("englang_dictGet", fn_type, None);
+            let entry = self.context.append_basic_block(func, "entry");
+            let hit = self.context.append_basic_block(func, "hit");
+            let miss = self.context.append_basic_block(func, "miss");
+
+            self.builder.position_at_end(entry);
+            let dict = func.get_nth_param(0).unwrap().into_pointer_value();
+            let key = func.get_nth_param(1).unwrap().into_pointer_value();
+            let idx = call_find(self, dict, key)?;
+            let found = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::SGE,
+                    idx,
+                    i64_type.const_int(0, false),
+                    "found",
+                )
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(found, hit, miss)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(hit);
+            let val_ptr = entry_ptr(self, dict, idx, 8, "val_ptr")?;
+            let val = self
+                .builder
+                .build_load(i64_type, val_ptr, "val")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&val))
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(miss);
+            let zero = i64_type.const_int(0, false);
+            self.builder
+                .build_return(Some(&zero))
+                .map_err(|e| e.to_string())?;
+        }
+
+        // --- englang_dictSet(dict: ptr, key: ptr, val: i64) -> ptr ---
+        {
+            let fn_type = ptr_type.fn_type(
+                &[ptr_type.into(), ptr_type.into(), i64_type.into()],
+                false,
+            );
+            let func = self.module.add_function("englang_dictSet", fn_type, None);
+            let entry = self.context.append_basic_block(func, "entry");
+            let update = self.context.append_basic_block(func, "update");
+            let grow = self.context.append_basic_block(func, "grow");
+
+            self.builder.position_at_end(entry);
+            let dict = func.get_nth_param(0).unwrap().into_pointer_value();
+            let key = func.get_nth_param(1).unwrap().into_pointer_value();
+            let val = func.get_nth_param(2).unwrap().into_int_value();
+            let idx = call_find(self, dict, key)?;
+            let found = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::SGE,
+                    idx,
+                    i64_type.const_int(0, false),
+                    "found",
+                )
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(found, update, grow)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(update);
+            let val_ptr = entry_ptr(self, dict, idx, 8, "val_ptr")?;
+            self.builder
+                .build_store(val_ptr, val)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&dict))
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(grow);
+            let len = load_len(self, dict)?;
+            let new_len = self
+                .builder
+                .build_int_add(len, i64_type.const_int(1, false), "new_len")
+                .map_err(|e| e.to_string())?;
+            let new_data = alloc_dict(self, new_len)?;
+            let old_bytes = self
+                .builder
+                .build_int_mul(len, i64_type.const_int(16, false), "old_bytes")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_call(
+                    memcpy,
+                    &[new_data.into(), dict.into(), old_bytes.into()],
+                    "copy_old",
+                )
+                .map_err(|e| e.to_string())?;
+            let key_ptr = entry_ptr(self, new_data, len, 0, "new_key_ptr")?;
+            let key_int = self
+                .builder
+                .build_ptr_to_int(key, i64_type, "key_int")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(key_ptr, key_int)
+                .map_err(|e| e.to_string())?;
+            let val_ptr = entry_ptr(self, new_data, len, 8, "new_val_ptr")?;
+            self.builder
+                .build_store(val_ptr, val)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&new_data))
+                .map_err(|e| e.to_string())?;
+        }
+
+        // --- englang_dictHas(dict: ptr, key: ptr) -> i1 ---
+        let dict_has = {
+            let bool_type = self.context.bool_type();
+            let fn_type = bool_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            let func = self.module.add_function("englang_dictHas", fn_type, None);
+            let entry = self.context.append_basic_block(func, "entry");
+            self.builder.position_at_end(entry);
+            let dict = func.get_nth_param(0).unwrap().into_pointer_value();
+            let key = func.get_nth_param(1).unwrap().into_pointer_value();
+            let idx = call_find(self, dict, key)?;
+            let found = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::SGE,
+                    idx,
+                    i64_type.const_int(0, false),
+                    "found",
+                )
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&found))
+                .map_err(|e| e.to_string())?;
+            func
+        };
+
+        // --- englang_dictRemove(dict: ptr, key: ptr) -> ptr ---
+        let dict_remove = {
+            let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            let func = self
+                .module
+                .add_function("englang_dictRemove", fn_type, None);
+            let entry = self.context.append_basic_block(func, "entry");
+            let keep = self.context.append_basic_block(func, "keep");
+            let shrink = self.context.append_basic_block(func, "shrink");
+
+            self.builder.position_at_end(entry);
+            let dict = func.get_nth_param(0).unwrap().into_pointer_value();
+            let key = func.get_nth_param(1).unwrap().into_pointer_value();
+            let idx = call_find(self, dict, key)?;
+            let found = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::SGE,
+                    idx,
+                    i64_type.const_int(0, false),
+                    "found",
+                )
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(found, shrink, keep)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(keep);
+            self.builder
+                .build_return(Some(&dict))
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(shrink);
+            let len = load_len(self, dict)?;
+            let new_len = self
+                .builder
+                .build_int_sub(len, i64_type.const_int(1, false), "new_len")
+                .map_err(|e| e.to_string())?;
+            let new_data = alloc_dict(self, new_len)?;
+            let sixteen = i64_type.const_int(16, false);
+            let head_bytes = self
+                .builder
+                .build_int_mul(idx, sixteen, "head_bytes")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_call(
+                    memcpy,
+                    &[new_data.into(), dict.into(), head_bytes.into()],
+                    "copy_head",
+                )
+                .map_err(|e| e.to_string())?;
+            let after = self
+                .builder
+                .build_int_add(idx, i64_type.const_int(1, false), "after")
+                .map_err(|e| e.to_string())?;
+            let src = entry_ptr(self, dict, after, 0, "tail_src")?;
+            let dst = entry_ptr(self, new_data, idx, 0, "tail_dst")?;
+            let tail_entries = self
+                .builder
+                .build_int_sub(new_len, idx, "tail_entries")
+                .map_err(|e| e.to_string())?;
+            let tail_bytes = self
+                .builder
+                .build_int_mul(tail_entries, sixteen, "tail_bytes")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_call(
+                    memcpy,
+                    &[dst.into(), src.into(), tail_bytes.into()],
+                    "copy_tail",
+                )
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_return(Some(&new_data))
+                .map_err(|e| e.to_string())?;
+            func
+        };
+
+        // --- englang_dictSize(dict: ptr) -> i64 ---
+        let dict_size = {
+            let fn_type = i64_type.fn_type(&[ptr_type.into()], false);
+            let func = self.module.add_function("englang_dictSize", fn_type, None);
+            let entry = self.context.append_basic_block(func, "entry");
+            self.builder.position_at_end(entry);
+            let dict = func.get_nth_param(0).unwrap().into_pointer_value();
+            let len = load_len(self, dict)?;
+            self.builder
+                .build_return(Some(&len))
+                .map_err(|e| e.to_string())?;
+            func
+        };
+
+        // --- englang_dictKeys(dict: ptr) -> ptr (list of text) ---
+        let dict_keys = {
+            let fn_type = ptr_type.fn_type(&[ptr_type.into()], false);
+            let func = self.module.add_function("englang_dictKeys", fn_type, None);
+            let entry = self.context.append_basic_block(func, "entry");
+            let cond = self.context.append_basic_block(func, "cond");
+            let body = self.context.append_basic_block(func, "body");
+            let done = self.context.append_basic_block(func, "done");
+
+            self.builder.position_at_end(entry);
+            let dict = func.get_nth_param(0).unwrap().into_pointer_value();
+            let len = load_len(self, dict)?;
+            // List layout: {len, cap} header then 8-byte slots
+            let eight = i64_type.const_int(8, false);
+            let sixteen = i64_type.const_int(16, false);
+            let data_size = self
+                .builder
+                .build_int_mul(len, eight, "data_size")
+                .map_err(|e| e.to_string())?;
+            let total = self
+                .builder
+                .build_int_add(data_size, sixteen, "total_size")
+                .map_err(|e| e.to_string())?;
+            let base = self
+                .builder
+                .build_call(malloc, &[total.into()], "list_alloc")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value();
+            let base = match base {
+                ValueKind::Basic(v) => v.into_pointer_value(),
+                _ => return Err("malloc returned void".to_string()),
+            };
+            self.builder
+                .build_store(base, len)
+                .map_err(|e| e.to_string())?;
+            let cap_ptr = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[eight], "cap_ptr")
+                    .map_err(|e| e.to_string())?
+            };
+            self.builder
+                .build_store(cap_ptr, len)
+                .map_err(|e| e.to_string())?;
+            let list_data = unsafe {
+                self.builder
+                    .build_gep(i8_type, base, &[sixteen], "list_data")
+                    .map_err(|e| e.to_string())?
+            };
+            let counter = self
+                .builder
+                .build_alloca(i64_type, "counter")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, i64_type.const_int(0, false))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(cond)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(cond);
+            let i = self
+                .builder
+                .build_load(i64_type, counter, "i")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let in_range = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i, len, "in_range")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_conditional_branch(in_range, body, done)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(body);
+            let key_slot_ptr = entry_ptr(self, dict, i, 0, "key_slot_ptr")?;
+            let key_slot = self
+                .builder
+                .build_load(i64_type, key_slot_ptr, "key_slot")
+                .map_err(|e| e.to_string())?;
+            let elem_off = self
+                .builder
+                .build_int_mul(i, eight, "elem_off")
+                .map_err(|e| e.to_string())?;
+            let elem_ptr = unsafe {
+                self.builder
+                    .build_gep(i8_type, list_data, &[elem_off], "elem_ptr")
+                    .map_err(|e| e.to_string())?
+            };
+            self.builder
+                .build_store(elem_ptr, key_slot)
+                .map_err(|e| e.to_string())?;
+            let next = self
+                .builder
+                .build_int_add(i, i64_type.const_int(1, false), "next")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(counter, next)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(cond)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(done);
+            self.builder
+                .build_return(Some(&list_data))
+                .map_err(|e| e.to_string())?;
+            func
+        };
+
+        let default_dict = Type::Dict(Box::new(Type::Text), Box::new(Type::Int));
+        for name in &["newDictionary", "newDict"] {
+            self.builtin_functions.insert(name.to_string(), dict_new);
+            self.builtin_return_types
+                .insert(name.to_string(), default_dict.clone());
+        }
+        for name in &["hasKey", "dictHas"] {
+            self.builtin_functions.insert(name.to_string(), dict_has);
+            self.builtin_return_types
+                .insert(name.to_string(), Type::Bool);
+        }
+        for name in &["removeKey", "dictRemove"] {
+            self.builtin_functions.insert(name.to_string(), dict_remove);
+            self.builtin_return_types
+                .insert(name.to_string(), default_dict.clone());
+        }
+        for name in &["keysOf", "dictKeys"] {
+            self.builtin_functions.insert(name.to_string(), dict_keys);
+            self.builtin_return_types
+                .insert(name.to_string(), Type::List(Box::new(Type::Text)));
+        }
+        for name in &["sizeOf", "dictSize"] {
+            self.builtin_functions.insert(name.to_string(), dict_size);
+            self.builtin_return_types
+                .insert(name.to_string(), Type::Int);
+        }
+
+        Ok(())
+    }
+
+    /// Convert a typed value into the 8-byte slot representation dictionaries store.
+    fn value_to_slot(
+        &self,
+        val: BasicValueEnum<'ctx>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, String> {
+        let i64_type = self.context.i64_type();
+        match val {
+            BasicValueEnum::IntValue(iv) => {
+                if iv.get_type().get_bit_width() == 64 {
+                    Ok(iv)
+                } else {
+                    self.builder
+                        .build_int_z_extend(iv, i64_type, "slot")
+                        .map_err(|e| e.to_string())
+                }
+            }
+            BasicValueEnum::FloatValue(fv) => Ok(self
+                .builder
+                .build_bit_cast(fv, i64_type, "slot")
+                .map_err(|e| e.to_string())?
+                .into_int_value()),
+            BasicValueEnum::PointerValue(pv) => self
+                .builder
+                .build_ptr_to_int(pv, i64_type, "slot")
+                .map_err(|e| e.to_string()),
+            _ => Err("Unsupported dictionary value type".to_string()),
+        }
+    }
+
+    /// Convert an 8-byte slot back into a typed value.
+    fn slot_to_value(
+        &self,
+        slot: inkwell::values::IntValue<'ctx>,
+        value_type: &Type,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        match value_type {
+            Type::Float => Ok(self
+                .builder
+                .build_bit_cast(slot, self.context.f64_type(), "val")
+                .map_err(|e| e.to_string())?),
+            Type::Text | Type::List(_) | Type::Dict(_, _) | Type::Class(_) => Ok(self
+                .builder
+                .build_int_to_ptr(
+                    slot,
+                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                    "val",
+                )
+                .map_err(|e| e.to_string())?
+                .into()),
+            Type::Bool => Ok(self
+                .builder
+                .build_int_truncate(slot, self.context.bool_type(), "val")
+                .map_err(|e| e.to_string())?
+                .into()),
+            _ => Ok(slot.into()),
+        }
     }
 
     fn declare_malloc(&mut self) {
@@ -7246,6 +7901,39 @@ impl<'ctx> CodeGen<'ctx> {
                 let i8_type = self.context.i8_type();
                 let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
 
+                let var_entry = self.variables.get(collection).cloned();
+                if let Some((var_ptr, Type::Dict(_, _))) = var_entry {
+                    let dict = match self
+                        .compile_expression(&Expr::Identifier(collection.clone()))?
+                    {
+                        BasicValueEnum::PointerValue(pv) => pv,
+                        _ => return Err("Dictionary must be a pointer".to_string()),
+                    };
+                    let key = match self.compile_expression(index)? {
+                        BasicValueEnum::PointerValue(pv) => pv,
+                        _ => return Err("Dictionary keys must be text".to_string()),
+                    };
+                    let val = self.compile_expression(value)?;
+                    let slot = self.value_to_slot(val)?;
+                    let set = self
+                        .module
+                        .get_function("englang_dictSet")
+                        .ok_or("dictSet not declared")?;
+                    let new_dict = self
+                        .builder
+                        .build_call(set, &[dict.into(), key.into(), slot.into()], "dict_set")
+                        .map_err(|e| e.to_string())?
+                        .try_as_basic_value();
+                    let new_dict = match new_dict {
+                        ValueKind::Basic(v) => v,
+                        _ => return Err("dictSet returned void".to_string()),
+                    };
+                    self.builder
+                        .build_store(var_ptr, new_dict)
+                        .map_err(|e| e.to_string())?;
+                    return Ok(());
+                }
+
                 // Get the list buffer pointer exactly the way an index read does.
                 let coll_ptr = self.compile_expression(&Expr::Identifier(collection.clone()))?;
                 let coll_ptr = match coll_ptr {
@@ -7616,6 +8304,35 @@ impl<'ctx> CodeGen<'ctx> {
                 let i64_type = self.context.i64_type();
                 let i8_type = self.context.i8_type();
                 let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+
+                if let Type::Dict(_, value_type) = self.infer_type(collection) {
+                    let dict = match self.compile_expression(collection)? {
+                        BasicValueEnum::PointerValue(pv) => pv,
+                        _ => return Err("Dictionary must be a pointer".to_string()),
+                    };
+                    let key = match self.compile_expression(index)? {
+                        BasicValueEnum::PointerValue(pv) => pv,
+                        _ => return Err("Dictionary keys must be text".to_string()),
+                    };
+                    let get = self
+                        .module
+                        .get_function("englang_dictGet")
+                        .ok_or("dictGet not declared")?;
+                    let slot = self
+                        .builder
+                        .build_call(get, &[dict.into(), key.into()], "dict_get")
+                        .map_err(|e| e.to_string())?
+                        .try_as_basic_value();
+                    let slot = match slot {
+                        ValueKind::Basic(v) => v.into_int_value(),
+                        _ => return Err("dictGet returned void".to_string()),
+                    };
+                    let value_type = match *value_type {
+                        Type::Inferred => Type::Int,
+                        other => other,
+                    };
+                    return self.slot_to_value(slot, &value_type);
+                }
 
                 let coll_ptr = self.compile_expression(collection)?;
                 let idx_val = self.compile_expression(index)?;
@@ -8166,10 +8883,13 @@ impl<'ctx> CodeGen<'ctx> {
             }
             Expr::Index { collection, .. } => {
                 // Return element type of the list
-                if let Type::List(elem_type) = self.infer_type(collection) {
-                    *elem_type
-                } else {
-                    Type::Int
+                match self.infer_type(collection) {
+                    Type::List(elem_type) => *elem_type,
+                    Type::Dict(_, value_type) => match *value_type {
+                        Type::Inferred => Type::Int,
+                        other => other,
+                    },
+                    _ => Type::Int,
                 }
             }
             _ => Type::Int,

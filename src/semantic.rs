@@ -521,8 +521,9 @@ impl SemanticAnalyzer {
                 let symbol = self.lookup_variable(collection).ok_or_else(|| {
                     SemanticError::UndefinedVariable(collection.clone(), self.current_line)
                 })?;
-                let element_type = match &symbol.symbol_type {
-                    Type::List(inner) => (**inner).clone(),
+                let (expected_index_type, element_type) = match &symbol.symbol_type {
+                    Type::List(inner) => (Type::Int, (**inner).clone()),
+                    Type::Dict(key, value) => ((**key).clone(), (**value).clone()),
                     other => {
                         return Err(SemanticError::TypeMismatch {
                             expected: Type::List(Box::new(Type::Inferred)),
@@ -532,9 +533,9 @@ impl SemanticAnalyzer {
                     }
                 };
                 let index_type = self.analyze_expression(index)?;
-                if index_type != Type::Int {
+                if index_type != expected_index_type {
                     return Err(SemanticError::TypeMismatch {
-                        expected: Type::Int,
+                        expected: expected_index_type,
                         found: index_type,
                         line: self.current_line,
                     });
@@ -857,6 +858,16 @@ impl SemanticAnalyzer {
                         }
                         Ok(Type::Text)
                     }
+                    Type::Dict(key_type, value_type) => {
+                        if idx_type != *key_type {
+                            return Err(SemanticError::TypeMismatch {
+                                expected: *key_type,
+                                found: idx_type,
+                                line: self.current_line,
+                            });
+                        }
+                        Ok(*value_type)
+                    }
                     _ => Err(SemanticError::TypeMismatch {
                         expected: Type::List(Box::new(Type::Int)),
                         found: coll_type,
@@ -1120,6 +1131,9 @@ impl SemanticAnalyzer {
     fn check_type_compatible(&self, expected: &Type, found: &Type) -> Result<(), SemanticError> {
         if expected == found || *expected == Type::Inferred || *found == Type::Inferred {
             Ok(())
+        } else if let (Type::Dict(ek, ev), Type::Dict(fk, fv)) = (expected, found) {
+            self.check_type_compatible(ek, fk)?;
+            self.check_type_compatible(ev, fv)
         } else {
             Err(SemanticError::TypeMismatch {
                 expected: expected.clone(),

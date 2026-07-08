@@ -318,6 +318,7 @@ impl Parser {
             Some(Token::Call) => self.parse_call_statement(),
             Some(Token::Ask) => self.parse_ask_statement(),
             Some(Token::Set) => self.parse_set_statement(),
+            Some(Token::Remove) => self.parse_remove_statement(),
             Some(Token::Plot) => self.parse_plot(),
             Some(Token::Identifier(_)) => self.parse_assignment_or_expr(),
             _ => Err(ParseError::InvalidStatement(
@@ -339,6 +340,25 @@ impl Parser {
         // Optional article (a/an)
         if self.check(&Token::A) || self.check(&Token::An) {
             self.advance();
+        }
+
+        // "let ages be a new dictionary [from text to decimal]."
+        if let Some(Token::Identifier(word)) = self.current()
+            && (word.eq_ignore_ascii_case("new") || word.eq_ignore_ascii_case("empty"))
+            && self.tokens.get(self.current + 1).map(|t| &t.token) == Some(&Token::TypeDict)
+        {
+            self.advance(); // "new" / "empty"
+            self.advance(); // "dictionary"
+            let var_type = self.parse_dict_type_tail()?;
+            self.expect(Token::Period)?;
+            return Ok(Statement::VariableDecl {
+                name,
+                var_type,
+                value: Expr::FunctionCall {
+                    name: "newDictionary".to_string(),
+                    arguments: Vec::new(),
+                },
+            });
         }
 
         let var_type = self.parse_type()?;
@@ -742,6 +762,23 @@ impl Parser {
         self.expect(Token::Period)?;
 
         Ok(Statement::Assignment { name, value })
+    }
+
+    /// Parse: Remove "Alice" from ages.
+    /// Desugars to: Set ages to the result of removeKey with ages and "Alice".
+    fn parse_remove_statement(&mut self) -> Result<Statement, ParseError> {
+        self.expect(Token::Remove)?;
+        let key = self.parse_expression()?;
+        self.expect(Token::From)?;
+        let name = self.expect_identifier()?;
+        self.expect(Token::Period)?;
+        Ok(Statement::Assignment {
+            name: name.clone(),
+            value: Expr::FunctionCall {
+                name: "removeKey".to_string(),
+                arguments: vec![Expr::Identifier(name), key],
+            },
+        })
     }
 
     /// Parse: plot data [against yData] [as a <type> chart] [titled "Title"] to "file.html".
@@ -1151,7 +1188,7 @@ impl Parser {
             }
             Some(Token::TypeDict) => {
                 self.advance();
-                Ok(Type::Dict(Box::new(Type::Text), Box::new(Type::Int)))
+                self.parse_dict_type_tail()
             }
             Some(Token::TypeTuple) => {
                 self.advance();
@@ -1173,6 +1210,27 @@ impl Parser {
                 Ok(Type::Class(class_name))
             }
             _ => Err(ParseError::ExpectedType(self.current_line())),
+        }
+    }
+
+    /// Parse the optional key/value part of a dictionary type:
+    /// "dictionary from text to decimal" (also accepts "of" in place of "from").
+    /// Defaults to text keys and standard number values.
+    fn parse_dict_type_tail(&mut self) -> Result<Type, ParseError> {
+        if self.match_token(&Token::From) || self.match_token(&Token::Of) {
+            let key_line = self.current_line();
+            let key_type = self.parse_type()?;
+            if key_type != Type::Text {
+                return Err(ParseError::InvalidStatement(
+                    key_line,
+                    "Dictionary keys must be text for now.".to_string(),
+                ));
+            }
+            self.expect(Token::To)?;
+            let value_type = self.parse_type()?;
+            Ok(Type::Dict(Box::new(key_type), Box::new(value_type)))
+        } else {
+            Ok(Type::Dict(Box::new(Type::Text), Box::new(Type::Int)))
         }
     }
 
@@ -1900,6 +1958,77 @@ mod tests {
                 assert!(matches!(value, Expr::IntLiteral(7)));
             }
             other => panic!("Expected IndexAssignment, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_dictionary_decl() {
+        let program = Parser::parse("Let ages be a new dictionary.").unwrap();
+        match &program.statements[0] {
+            Statement::VariableDecl {
+                name,
+                var_type,
+                value,
+            } => {
+                assert_eq!(name, "ages");
+                assert_eq!(
+                    *var_type,
+                    Type::Dict(Box::new(Type::Text), Box::new(Type::Int))
+                );
+                assert!(matches!(value, Expr::FunctionCall { name, .. } if name == "newDictionary"));
+            }
+            other => panic!("Expected VariableDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_dictionary_from_to() {
+        let program = Parser::parse("Let prices be a new dictionary from text to decimal.").unwrap();
+        match &program.statements[0] {
+            Statement::VariableDecl { var_type, .. } => {
+                assert_eq!(
+                    *var_type,
+                    Type::Dict(Box::new(Type::Text), Box::new(Type::Float))
+                );
+            }
+            other => panic!("Expected VariableDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dictionary_non_text_keys_rejected() {
+        assert!(Parser::parse("Let d be a new dictionary from standard number to text.").is_err());
+    }
+
+    #[test]
+    fn test_remove_statement() {
+        let program = Parser::parse(r#"Remove "Alice" from ages."#).unwrap();
+        match &program.statements[0] {
+            Statement::Assignment { name, value } => {
+                assert_eq!(name, "ages");
+                match value {
+                    Expr::FunctionCall { name, arguments } => {
+                        assert_eq!(name, "removeKey");
+                        assert_eq!(arguments.len(), 2);
+                    }
+                    other => panic!("Expected removeKey call, got {:?}", other),
+                }
+            }
+            other => panic!("Expected Assignment, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_lock_and_key_list_alias() {
+        let program = Parser::parse("Let ages be a new lock and key list.").unwrap();
+        match &program.statements[0] {
+            Statement::VariableDecl { var_type, .. } => {
+                assert_eq!(
+                    *var_type,
+                    Type::Dict(Box::new(Type::Text), Box::new(Type::Int))
+                );
+            }
+            other => panic!("Expected VariableDecl, got {:?}", other),
         }
     }
 
