@@ -1,0 +1,19 @@
+Note: Solves ax^2 + bx + c = 0. Works on your computer AND your calculator:
+Note: englishc examples/quadratic.eng --ti-basic
+
+output "ENTER A".
+Let coeffA be a standard number with value the result of readNumber.
+output "ENTER B".
+Let coeffB be a standard number with value the result of readNumber.
+output "ENTER C".
+Let coeffC be a standard number with value the result of readNumber.
+
+Let discriminant be a standard number with value coeffB * coeffB - 4 * coeffA * coeffC.
+
+If discriminant is less than 0 then
+    output "NO REAL ROOTS".
+otherwise
+    Let root be a decimal with value the result of squareRoot with discriminant.
+    output (negative coeffB + root) / (2 * coeffA).
+    output (negative coeffB - root) / (2 * coeffA).
+End.

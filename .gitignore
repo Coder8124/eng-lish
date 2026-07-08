@@ -30,3 +30,6 @@ examples/binaries/*
 
 # Generated chart output
 *.html
+
+# Generated TI-BASIC output
+*.8xp.txt

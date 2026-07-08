@@ -4,6 +4,7 @@ mod lexer;
 mod parser;
 mod semantic;
 mod stdlib;
+mod tibasic;
 
 use ast::Program;
 use codegen::CodeGen;
@@ -133,10 +134,11 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        eprintln!("Usage: englishc <source.eng> [--ir]");
+        eprintln!("Usage: englishc <source.eng> [--ir | --ti-basic]");
         eprintln!("       englishc install <github-url>");
         eprintln!("Options:");
-        eprintln!("  --ir    Print LLVM IR instead of compiling");
+        eprintln!("  --ir        Print LLVM IR instead of compiling");
+        eprintln!("  --ti-basic  Translate to TI-BASIC for TI-83/84 calculators");
         std::process::exit(1);
     }
 
@@ -147,6 +149,7 @@ fn main() {
 
     let source_path = &args[1];
     let print_ir = args.contains(&"--ir".to_string());
+    let ti_basic = args.contains(&"--ti-basic".to_string());
 
     let source = match fs::read_to_string(source_path) {
         Ok(s) => s,
@@ -198,6 +201,29 @@ fn main() {
 
     // Resolve beginner-mode Inferred types before codegen
     analyzer.patch_program_types(&mut program);
+
+    if ti_basic {
+        match tibasic::compile(&program) {
+            Ok(code) => {
+                let out_path = Path::new(source_path).with_extension("8xp.txt");
+                if let Err(e) = fs::write(&out_path, &code) {
+                    eprintln!("Error writing '{}': {}", out_path.display(), e);
+                    std::process::exit(1);
+                }
+                println!("TI-BASIC program written to: {}", out_path.display());
+                println!("Paste it into TI Connect CE's Program Editor (or SourceCoder) and send it to your calculator.");
+                print!("{}", code);
+            }
+            Err(errors) => {
+                eprintln!("This program can't run on a calculator yet:");
+                for error in &errors {
+                    eprintln!("  {}", error);
+                }
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
     // Code generation
     let context = Context::create();

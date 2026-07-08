@@ -36,6 +36,10 @@ Packages add extra functions to your program. Use them with `use "packageName".`
 | [`game`](game-package.md) | Terminal game helpers: `printBorder`, `printRow`, `centerText` |
 | [`neural`](neural-networks.md) | Neural networks: `initWeights`, `linearLayer`, `sigmoidActivation`, `mseError` |
 
+## Calculators
+
+eng-lish programs can run on TI-83/84 graphing calculators. See [TI-BASIC output](ti-basic.md) — compile with `--ti-basic` and send the result to your calculator.
+
 ## Examples
 
 All example programs live in the `examples/` folder. Try running them with:
