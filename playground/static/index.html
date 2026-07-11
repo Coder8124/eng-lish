@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eng-lish playground</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📝</text></svg>">
+<style>
+  :root {
+    --bg: #f6f7fb;
+    --panel: #ffffff;
+    --border: #dfe3ee;
+    --ink: #1d2333;
+    --muted: #6b7288;
+    --accent: #2f6fed;
+    --accent-dark: #2258c7;
+    --calc: #7a4fd3;
+    --ok: #1d8f4e;
+    --err: #c93b3b;
+    --code-bg: #fbfcff;
+    --kw: #2f6fed;
+    --str: #1d8f4e;
+    --num: #b25c00;
+    --com: #9aa1b5;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  header h1 span { color: var(--accent); }
+  select {
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    font-size: 14px;
+    max-width: 220px;
+  }
+  .spacer { flex: 1; }
+  button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    background: #e8ebf4;
+    color: var(--ink);
+  }
+  button:hover { filter: brightness(0.96); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #runBtn { background: var(--accent); color: #fff; }
+  #runBtn:hover { background: var(--accent-dark); filter: none; }
+  #calcBtn { background: var(--calc); color: #fff; }
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: 12px;
+    padding: 12px;
+    min-height: 0;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .editor-wrap { position: relative; flex: 1; min-height: 0; }
+  #highlight, #editor {
+    margin: 0;
+    padding: 14px 16px;
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 14px;
+    line-height: 1.55;
+    tab-size: 4;
+    white-space: pre;
+    overflow: auto;
+    width: 100%;
+    height: 100%;
+    border: none;
+  }
+  #highlight {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: var(--code-bg);
+    color: var(--ink);
+  }
+  #editor {
+    position: absolute;
+    inset: 0;
+    background: transparent;
+    color: transparent;
+    caret-color: var(--ink);
+    resize: none;
+    outline: none;
+  }
+  .kw { color: var(--kw); font-weight: 600; }
+  .str { color: var(--str); }
+  .num { color: var(--num); }
+  .com { color: var(--com); font-style: italic; }
+  .right { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    padding: 8px 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab {
+    padding: 7px 14px;
+    border-radius: 8px 8px 0 0;
+    font-size: 13px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--muted);
+  }
+  .tab.active { background: var(--code-bg); color: var(--ink); border: 1px solid var(--border); border-bottom: none; }
+  .tabpane {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 12px 16px;
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13.5px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .tabpane.hidden { display: none; }
+  #plotsPane { padding: 8px; }
+  #plotsPane iframe {
+    width: 100%;
+    height: 320px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #fff;
+    margin-bottom: 8px;
+  }
+  .status { padding: 6px 16px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); }
+  .status .ok { color: var(--ok); font-weight: 600; }
+  .status .err { color: var(--err); font-weight: 600; }
+  .oops {
+    background: #fff4e5;
+    border: 1px solid #f0c988;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    white-space: pre-wrap;
+  }
+  .errtext { color: var(--err); }
+  .muted { color: var(--muted); }
+  .stdin-panel { flex: none; }
+  .stdin-panel label {
+    display: block;
+    padding: 8px 16px 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  #stdin {
+    border: none;
+    outline: none;
+    resize: vertical;
+    min-height: 44px;
+    max-height: 140px;
+    padding: 8px 16px 12px;
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px;
+    width: 100%;
+  }
+  footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  footer .try { font-size: 13px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+  .chip {
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 500;
+    background: #eef2fc;
+    color: var(--accent-dark);
+    white-space: nowrap;
+  }
+  .toast {
+    position: fixed;
+    bottom: 70px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--ink);
+    color: #fff;
+    padding: 10px 18px;
+    border-radius: 10px;
+    font-size: 14px;
+    opacity: 0;
+    transition: opacity 0.25s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+  @media (max-width: 800px) {
+    main { grid-template-columns: 1fr; }
+    .editor-panel { min-height: 45vh; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>eng-<span>lish</span> playground</h1>
+  <select id="exampleSelect" title="Load an example">
+    <option value="">Examples…</option>
+  </select>
+  <div class="spacer"></div>
+  <button id="shareBtn" title="Copy a link to this program">Share</button>
+  <button id="calcBtn" title="Translate to TI-BASIC for your calculator">Calculator 📟</button>
+  <button id="runBtn" title="Run (Ctrl+Enter)">Run ▶</button>
+</header>
+
+<main>
+  <div class="panel editor-panel">
+    <div class="editor-wrap">
+      <pre id="highlight" aria-hidden="true"></pre>
+      <textarea id="editor" spellcheck="false" wrap="off" autocapitalize="off" autocomplete="off"></textarea>
+    </div>
+  </div>
+
+  <div class="right">
+    <div class="panel" style="flex:1">
+      <div class="tabs">
+        <button class="tab active" data-pane="outputPane">Output</button>
+        <button class="tab" data-pane="calcPane">Calculator</button>
+        <button class="tab" data-pane="plotsPane" id="plotsTab" style="display:none">Plots</button>
+      </div>
+      <div class="tabpane" id="outputPane"><span class="muted">Press Run ▶ to see what your program does.</span></div>
+      <div class="tabpane hidden" id="calcPane"><span class="muted">Press Calculator 📟 to turn your program into TI-BASIC for a TI-83/84 calculator.</span></div>
+      <div class="tabpane hidden" id="plotsPane"></div>
+      <div class="status" id="status"></div>
+    </div>
+    <div class="panel stdin-panel">
+      <label for="stdin">Program input (one answer per line, used when your program asks a question)</label>
+      <textarea id="stdin" placeholder=""></textarea>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <span class="try">Try:</span>
+  <span id="chips"></span>
+</footer>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const DEFAULT_PROGRAM = `Note: Welcome to eng-lish! Press Run to try it.
+
+Let scores be a new dictionary.
+Set scores["Alice"] to 12.
+Set scores["Bob"] to 15.
+
+output "Bob's score:".
+output scores["Bob"].
+
+For each round from 1 to 3,
+    output "Round".
+    output round.
+End.
+`;
+
+const editor = document.getElementById('editor');
+const highlight = document.getElementById('highlight');
+const stdin = document.getElementById('stdin');
+const statusEl = document.getElementById('status');
+const toast = document.getElementById('toast');
+
+const KEYWORDS = [
+  'For each','standard number','lock and key list','give back','the result of','Define a kind called',
+  'is at least','is at most','is greater than or equal to','is less than or equal to',
+  'is greater than','is less than','is equal to','is not equal to','the remainder of','the quotient of',
+  'divided by','use beginner','returning','otherwise','While','Let','Set','be','with','value','a','an',
+  'output','If','then','End','from','to','by','Add','Subtract','Multiply','Divide','Remove','To','Call',
+  'use','stop','skip','and','or','not','decimal','text','boolean','list','dictionary','plot','as','negative'
+];
+const kwPattern = KEYWORDS
+  .sort((a, b) => b.length - a.length)
+  .map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  .join('|');
+const tokenRe = new RegExp(
+  '(Note:[^\\n]*)|("(?:[^"\\\\]|\\\\.)*")|\\b(' + kwPattern + ')\\b|\\b(\\d+(?:\\.\\d+)?)\\b',
+  'g'
+);
+
+function esc(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function renderHighlight() {
+  const src = editor.value;
+  let html = '';
+  let last = 0;
+  tokenRe.lastIndex = 0;
+  let m;
+  while ((m = tokenRe.exec(src)) !== null) {
+    html += esc(src.slice(last, m.index));
+    if (m[1]) html += '<span class="com">' + esc(m[1]) + '</span>';
+    else if (m[2]) html += '<span class="str">' + esc(m[2]) + '</span>';
+    else if (m[3]) html += '<span class="kw">' + esc(m[3]) + '</span>';
+    else html += '<span class="num">' + esc(m[4]) + '</span>';
+    last = m.index + m[0].length;
+  }
+  html += esc(src.slice(last));
+  highlight.innerHTML = html + '\n';
+}
+
+editor.addEventListener('input', renderHighlight);
+editor.addEventListener('scroll', () => {
+  highlight.scrollTop = editor.scrollTop;
+  highlight.scrollLeft = editor.scrollLeft;
+});
+editor.addEventListener('keydown', e => {
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const s = editor.selectionStart, t = editor.selectionEnd;
+    editor.value = editor.value.slice(0, s) + '    ' + editor.value.slice(t);
+    editor.selectionStart = editor.selectionEnd = s + 4;
+    renderHighlight();
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    e.preventDefault();
+    runProgram('native');
+  }
+});
+
+const tabs = document.querySelectorAll('.tab');
+function showTab(paneId) {
+  tabs.forEach(t => t.classList.toggle('active', t.dataset.pane === paneId));
+  document.querySelectorAll('.tabpane').forEach(p => p.classList.toggle('hidden', p.id !== paneId));
+}
+tabs.forEach(t => t.addEventListener('click', () => showTab(t.dataset.pane)));
+
+function showToast(msg) {
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 1800);
+}
+
+function renderOutput(res) {
+  const pane = document.getElementById('outputPane');
+  pane.innerHTML = '';
+  if (res.compile_errors) {
+    const isOops = res.compile_errors.includes('Oops!');
+    const div = document.createElement('div');
+    div.className = isOops ? 'oops' : 'errtext';
+    div.textContent = res.compile_errors;
+    pane.appendChild(div);
+  }
+  if (res.stdout) {
+    const div = document.createElement('div');
+    div.textContent = res.stdout;
+    pane.appendChild(div);
+  }
+  if (res.stderr) {
+    const div = document.createElement('div');
+    div.className = 'errtext';
+    div.textContent = res.stderr;
+    pane.appendChild(div);
+  }
+  if (res.timed_out) {
+    const div = document.createElement('div');
+    div.className = 'errtext';
+    div.textContent = '⏱ Your program ran for more than 5 seconds and was stopped. Is there a loop that never ends?';
+    pane.appendChild(div);
+  }
+  if (res.truncated) {
+    const div = document.createElement('div');
+    div.className = 'muted';
+    div.textContent = '… output was cut off (64 KB limit).';
+    pane.appendChild(div);
+  }
+  if (!pane.hasChildNodes()) {
+    pane.innerHTML = '<span class="muted">(the program finished without printing anything)</span>';
+  }
+
+  const plotsTab = document.getElementById('plotsTab');
+  const plotsPane = document.getElementById('plotsPane');
+  plotsPane.innerHTML = '';
+  if (res.plots && res.plots.length) {
+    plotsTab.style.display = '';
+    for (const plot of res.plots) {
+      const label = document.createElement('div');
+      label.className = 'muted';
+      label.style.padding = '4px 8px';
+      label.textContent = plot.name;
+      const frame = document.createElement('iframe');
+      frame.setAttribute('sandbox', 'allow-scripts');
+      frame.srcdoc = plot.html;
+      plotsPane.appendChild(label);
+      plotsPane.appendChild(frame);
+    }
+  } else {
+    plotsTab.style.display = 'none';
+  }
+}
+
+async function runProgram(target) {
+  const runBtn = document.getElementById('runBtn');
+  const calcBtn = document.getElementById('calcBtn');
+  runBtn.disabled = calcBtn.disabled = true;
+  statusEl.textContent = target === 'ti-basic' ? 'Translating for your calculator…' : 'Compiling and running…';
+  try {
+    const res = await fetch('/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: editor.value, input: stdin.value, target })
+    });
+    if (!res.ok) {
+      statusEl.innerHTML = '<span class="err">' + esc(await res.text()) + '</span>';
+      return;
+    }
+    const data = await res.json();
+    if (target === 'ti-basic') {
+      const pane = document.getElementById('calcPane');
+      if (data.success) {
+        pane.textContent = data.tibasic;
+        const note = document.createElement('div');
+        note.className = 'muted';
+        note.style.marginTop = '12px';
+        note.textContent = 'Paste this into TI Connect CE’s Program Editor (or SourceCoder) and send it to your TI-83/84.';
+        pane.appendChild(note);
+      } else {
+        pane.innerHTML = '';
+        const div = document.createElement('div');
+        div.className = 'errtext';
+        div.textContent = data.compile_errors || 'Something went wrong.';
+        pane.appendChild(div);
+      }
+      showTab('calcPane');
+    } else {
+      renderOutput(data);
+      showTab(data.plots && data.plots.length && !data.stdout ? 'plotsPane' : 'outputPane');
+    }
+    statusEl.innerHTML = data.success
+      ? '<span class="ok">✓ Done</span> in ' + data.duration_ms + ' ms'
+      : '<span class="err">✗ ' + (data.compile_errors ? 'Compile problem' : 'Program problem') + '</span>';
+  } catch (err) {
+    statusEl.innerHTML = '<span class="err">Could not reach the playground server.</span>';
+  } finally {
+    runBtn.disabled = calcBtn.disabled = false;
+  }
+}
+
+document.getElementById('runBtn').addEventListener('click', () => runProgram('native'));
+document.getElementById('calcBtn').addEventListener('click', () => runProgram('ti-basic'));
+
+document.getElementById('shareBtn').addEventListener('click', async () => {
+  const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(editor.value)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const url = location.origin + location.pathname + '#code=' + encoded;
+  history.replaceState(null, '', '#code=' + encoded);
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast('Link copied! Send it to a friend.');
+  } catch {
+    showToast('Link is in the address bar — copy it from there.');
+  }
+});
+
+function loadFromHash() {
+  if (!location.hash.startsWith('#code=')) return false;
+  try {
+    const b64 = location.hash.slice(6).replace(/-/g, '+').replace(/_/g, '/');
+    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    editor.value = new TextDecoder().decode(bytes);
+    renderHighlight();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+let examplesList = [];
+function loadExample(ex) {
+  editor.value = ex.source;
+  stdin.value = ex.input || '';
+  renderHighlight();
+  history.replaceState(null, '', location.pathname);
+  statusEl.innerHTML = '<span class="muted">' + esc(ex.description) + '</span>';
+}
+
+async function loadExamples() {
+  try {
+    const res = await fetch('/examples');
+    examplesList = await res.json();
+  } catch {
+    return;
+  }
+  const select = document.getElementById('exampleSelect');
+  const chips = document.getElementById('chips');
+  examplesList.forEach((ex, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = ex.title;
+    select.appendChild(opt);
+    if (i < 6) {
+      const chip = document.createElement('button');
+      chip.className = 'chip';
+      chip.textContent = ex.title;
+      chip.addEventListener('click', () => loadExample(ex));
+      chips.appendChild(chip);
+    }
+  });
+  select.addEventListener('change', () => {
+    if (select.value !== '') loadExample(examplesList[+select.value]);
+    select.value = '';
+  });
+}
+
+if (!loadFromHash()) {
+  editor.value = DEFAULT_PROGRAM;
+  renderHighlight();
+}
+loadExamples();
+</script>
+</body>
+</html>

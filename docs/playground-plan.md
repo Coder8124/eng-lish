@@ -2,6 +2,8 @@
 
 A browser playground is the front door for eng-lish: a visitor should go from "what is this?" to running their first program in under ten seconds, with zero install. This document is the implementation plan.
 
+> **Status:** v1 is implemented in `playground/` (milestones 1–5: run API, editor UI, example gallery, share links, TI-BASIC tab, plot tab, syntax highlighting). Milestone 6 (public deploy behind a real sandbox) is still open — see `playground/README.md`.
+
 ## Goals
 
 1. **Show what the language actually does.** The first screen is a working program, already loaded, with a Run button — not an empty editor.

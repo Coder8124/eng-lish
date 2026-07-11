@@ -1,0 +1,63 @@
+[
+  {
+    "file": "hello.eng",
+    "title": "Hello, World!",
+    "description": "The classic first program."
+  },
+  {
+    "file": "fizzbuzz.eng",
+    "title": "FizzBuzz",
+    "description": "Count to 30, but say Fizz and Buzz on multiples of 3 and 5."
+  },
+  {
+    "file": "dictionaries.eng",
+    "title": "Dictionaries",
+    "description": "Store ages by name, look them up, and remove them."
+  },
+  {
+    "file": "quadratic.eng",
+    "title": "Quadratic solver",
+    "description": "Solves ax² + bx + c = 0. Also runs on a TI calculator — try the Calculator button!",
+    "input": "1\n-3\n2\n"
+  },
+  {
+    "file": "loops.eng",
+    "title": "Loops",
+    "description": "For each and While loops."
+  },
+  {
+    "file": "arrays.eng",
+    "title": "Lists",
+    "description": "Make lists, read items, and change them."
+  },
+  {
+    "file": "functions.eng",
+    "title": "Functions",
+    "description": "Write reusable pieces of code with To ... :"
+  },
+  {
+    "file": "classes.eng",
+    "title": "Classes",
+    "description": "Group data and behavior with Define a kind."
+  },
+  {
+    "file": "beginner_greeting.eng",
+    "title": "Beginner mode",
+    "description": "Simplified syntax with use beginner."
+  },
+  {
+    "file": "primes.eng",
+    "title": "Prime numbers",
+    "description": "Find prime numbers with nested loops."
+  },
+  {
+    "file": "fibonacci.eng",
+    "title": "Fibonacci",
+    "description": "The famous number sequence."
+  },
+  {
+    "file": "ml.eng",
+    "title": "Data science",
+    "description": "Statistics and charts — check the Plots tab after running."
+  }
+]

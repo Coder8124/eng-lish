@@ -33,3 +33,8 @@ examples/binaries/*
 
 # Generated TI-BASIC output
 *.8xp.txt
+
+# Playground
+playground/target/
+.playwright-mcp/
+!playground/static/index.html
