@@ -10,6 +10,21 @@
     "description": "Count to 30, but say Fizz and Buzz on multiples of 3 and 5."
   },
   {
+    "file": "games/pong.eng",
+    "title": "Pong 🎮",
+    "description": "Classic paddle game — press Play 🎮 and type up, down, or stay each turn."
+  },
+  {
+    "file": "games/kart_race.eng",
+    "title": "Kart race 🎮",
+    "description": "Race against Bowser, Peach, and Toad — press Play 🎮 to start."
+  },
+  {
+    "file": "games/block_world.eng",
+    "title": "Block world 🎮",
+    "description": "Explore, chop trees, and craft planks — press Play 🎮 to start."
+  },
+  {
     "file": "dictionaries.eng",
     "title": "Dictionaries",
     "description": "Store ages by name, look them up, and remove them."

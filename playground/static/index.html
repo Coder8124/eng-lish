@@ -68,6 +68,27 @@
   #runBtn { background: var(--accent); color: #fff; }
   #runBtn:hover { background: var(--accent-dark); filter: none; }
   #calcBtn { background: var(--calc); color: #fff; }
+  #playBtn { background: var(--ok); color: #fff; }
+  #playBtn.playing { background: var(--err); }
+  .play-row {
+    display: none;
+    gap: 8px;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
+    background: var(--code-bg);
+  }
+  .play-row.active { display: flex; }
+  .play-row input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 14px;
+    outline: none;
+  }
+  .play-row input:focus { border-color: var(--ok); }
+  .echo { color: var(--ok); font-weight: 600; }
   main {
     flex: 1;
     display: grid;
@@ -237,6 +258,7 @@
   <div class="spacer"></div>
   <button id="shareBtn" title="Copy a link to this program">Share</button>
   <button id="calcBtn" title="Translate to TI-BASIC for your calculator">Calculator 📟</button>
+  <button id="playBtn" title="Play interactively — type answers while the program runs">Play 🎮</button>
   <button id="runBtn" title="Run (Ctrl+Enter)">Run ▶</button>
 </header>
 
@@ -258,6 +280,10 @@
       <div class="tabpane" id="outputPane"><span class="muted">Press Run ▶ to see what your program does.</span></div>
       <div class="tabpane hidden" id="calcPane"><span class="muted">Press Calculator 📟 to turn your program into TI-BASIC for a TI-83/84 calculator.</span></div>
       <div class="tabpane hidden" id="plotsPane"></div>
+      <div class="play-row" id="playRow">
+        <input id="playInput" placeholder="Type your move and press Enter…" autocomplete="off">
+        <button id="playSend">Send</button>
+      </div>
       <div class="status" id="status"></div>
     </div>
     <div class="panel stdin-panel">
@@ -474,6 +500,111 @@ async function runProgram(target) {
 
 document.getElementById('runBtn').addEventListener('click', () => runProgram('native'));
 document.getElementById('calcBtn').addEventListener('click', () => runProgram('ti-basic'));
+
+let playSocket = null;
+const playBtn = document.getElementById('playBtn');
+const playRow = document.getElementById('playRow');
+const playInput = document.getElementById('playInput');
+const outputPane = document.getElementById('outputPane');
+
+function appendTerm(text, cls) {
+  const span = document.createElement('span');
+  if (cls) span.className = cls;
+  span.textContent = text;
+  outputPane.appendChild(span);
+  outputPane.scrollTop = outputPane.scrollHeight;
+}
+
+function endPlay(statusHtml) {
+  if (playSocket) {
+    playSocket.onmessage = playSocket.onclose = playSocket.onerror = null;
+    try { playSocket.close(); } catch {}
+    playSocket = null;
+  }
+  playBtn.textContent = 'Play 🎮';
+  playBtn.classList.remove('playing');
+  playRow.classList.remove('active');
+  document.getElementById('runBtn').disabled = false;
+  document.getElementById('calcBtn').disabled = false;
+  if (statusHtml) statusEl.innerHTML = statusHtml;
+}
+
+function startPlay() {
+  if (playSocket) { endPlay('<span class="muted">Stopped.</span>'); return; }
+  outputPane.innerHTML = '';
+  showTab('outputPane');
+  document.getElementById('runBtn').disabled = true;
+  document.getElementById('calcBtn').disabled = true;
+  playBtn.textContent = 'Stop ⏹';
+  playBtn.classList.add('playing');
+  statusEl.textContent = 'Connecting…';
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(proto + '//' + location.host + '/play');
+  playSocket = ws;
+
+  ws.onopen = () => ws.send(JSON.stringify({ source: editor.value }));
+  ws.onmessage = e => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    switch (msg.event) {
+      case 'compiling':
+        statusEl.textContent = 'Compiling…';
+        break;
+      case 'compile_errors': {
+        const div = document.createElement('div');
+        div.className = msg.data.includes('Oops!') ? 'oops' : 'errtext';
+        div.textContent = msg.data;
+        outputPane.appendChild(div);
+        endPlay('<span class="err">✗ Compile problem</span>');
+        break;
+      }
+      case 'error':
+        appendTerm(msg.data + '\n', 'errtext');
+        endPlay('<span class="err">✗ ' + esc(msg.data) + '</span>');
+        break;
+      case 'started':
+        statusEl.innerHTML = '<span class="ok">● Playing</span> — type below and press Enter';
+        playRow.classList.add('active');
+        playInput.focus();
+        break;
+      case 'stdout':
+        appendTerm(msg.data);
+        break;
+      case 'stderr':
+        appendTerm(msg.data, 'errtext');
+        break;
+      case 'truncated':
+        appendTerm('… output was cut off (256 KB limit).\n', 'muted');
+        break;
+      case 'timeout':
+        appendTerm('⏱ Game time limit reached (10 minutes).\n', 'errtext');
+        break;
+      case 'exit':
+        endPlay(msg.data === 'ok'
+          ? '<span class="ok">✓ Program finished</span>'
+          : '<span class="muted">Program stopped</span>');
+        break;
+    }
+  };
+  ws.onclose = () => { if (playSocket === ws) endPlay('<span class="muted">Disconnected.</span>'); };
+  ws.onerror = () => { if (playSocket === ws) endPlay('<span class="err">Could not reach the playground server.</span>'); };
+}
+
+function sendPlayLine() {
+  if (!playSocket || playSocket.readyState !== WebSocket.OPEN) return;
+  const line = playInput.value;
+  playSocket.send(JSON.stringify({ stdin: line + '\n' }));
+  appendTerm('› ' + line + '\n', 'echo');
+  playInput.value = '';
+  playInput.focus();
+}
+
+playBtn.addEventListener('click', startPlay);
+document.getElementById('playSend').addEventListener('click', sendPlayLine);
+playInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); sendPlayLine(); }
+});
 
 document.getElementById('shareBtn').addEventListener('click', async () => {
   const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(editor.value)))

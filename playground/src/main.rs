@@ -1,6 +1,7 @@
 use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::StatusCode;
-use axum::response::Html;
+use axum::response::{Html, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -20,11 +21,14 @@ const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_PLOT_BYTES: u64 = 512 * 1024;
 const COMPILE_TIMEOUT: Duration = Duration::from_secs(20);
 const RUN_TIMEOUT: Duration = Duration::from_secs(5);
+const PLAY_TIMEOUT: Duration = Duration::from_secs(600);
+const MAX_PLAY_OUTPUT_BYTES: usize = 256 * 1024;
 
 struct AppState {
     repo_root: PathBuf,
     compiler: PathBuf,
     run_slots: Semaphore,
+    play_slots: Semaphore,
     run_counter: AtomicU64,
 }
 
@@ -108,6 +112,7 @@ async fn main() {
         repo_root: root,
         compiler,
         run_slots: Semaphore::new(2),
+        play_slots: Semaphore::new(4),
         run_counter: AtomicU64::new(0),
     });
 
@@ -115,6 +120,7 @@ async fn main() {
         .route("/", get(index))
         .route("/examples", get(examples))
         .route("/run", post(run))
+        .route("/play", get(play))
         .with_state(state);
 
     let port: u16 = std::env::var("PORT")
@@ -195,28 +201,42 @@ async fn run(
     })
 }
 
+async fn setup_workdir(state: &AppState, source: &str, work_dir: &Path) -> Result<(), String> {
+    tokio::fs::create_dir_all(work_dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::fs::write(work_dir.join("program.eng"), source)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = tokio::fs::symlink(state.repo_root.join("packages"), work_dir.join("packages")).await;
+    Ok(())
+}
+
+fn compile_command(state: &AppState, work_dir: &Path, ti_basic: bool) -> Command {
+    let mut cmd = Command::new(&state.compiler);
+    cmd.arg("program.eng").current_dir(work_dir);
+    if ti_basic {
+        cmd.arg("--ti-basic");
+    }
+    cmd
+}
+
 async fn execute(
     state: &AppState,
     req: &RunRequest,
     work_dir: &Path,
 ) -> Result<RunResponse, String> {
-    tokio::fs::create_dir_all(work_dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    tokio::fs::write(work_dir.join("program.eng"), &req.source)
-        .await
-        .map_err(|e| e.to_string())?;
-    let _ = tokio::fs::symlink(state.repo_root.join("packages"), work_dir.join("packages")).await;
+    setup_workdir(state, &req.source, work_dir).await?;
 
     let started = std::time::Instant::now();
     let mut resp = RunResponse::default();
 
-    let mut compile_cmd = Command::new(&state.compiler);
-    compile_cmd.arg("program.eng").current_dir(work_dir);
-    if req.target == "ti-basic" {
-        compile_cmd.arg("--ti-basic");
-    }
-    let compile = capture(compile_cmd, &[], COMPILE_TIMEOUT).await?;
+    let compile = capture(
+        compile_command(state, work_dir, req.target == "ti-basic"),
+        &[],
+        COMPILE_TIMEOUT,
+    )
+    .await?;
 
     if compile.timed_out {
         resp.compile_errors = "Compiling took too long and was stopped.".to_string();
@@ -332,6 +352,187 @@ async fn capture(
         stdout,
         stderr,
     })
+}
+
+#[derive(Deserialize)]
+struct PlayClientMsg {
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    stdin: Option<String>,
+    #[serde(default)]
+    stop: bool,
+}
+
+async fn play(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
+    ws.on_upgrade(move |socket| play_session(socket, state))
+}
+
+async fn send_event(socket: &mut WebSocket, event: &str, data: &str) -> bool {
+    let msg = serde_json::json!({ "event": event, "data": data }).to_string();
+    socket.send(Message::Text(msg.into())).await.is_ok()
+}
+
+async fn play_session(mut socket: WebSocket, state: Arc<AppState>) {
+    let Ok(_slot) = state.play_slots.try_acquire() else {
+        let _ = send_event(
+            &mut socket,
+            "error",
+            "Too many games are running right now — try again in a moment.",
+        )
+        .await;
+        return;
+    };
+
+    let source = loop {
+        match socket.recv().await {
+            Some(Ok(Message::Text(text))) => {
+                if let Ok(msg) = serde_json::from_str::<PlayClientMsg>(&text)
+                    && let Some(source) = msg.source
+                {
+                    break source;
+                }
+            }
+            Some(Ok(_)) => continue,
+            _ => return,
+        }
+    };
+    if source.len() > MAX_SOURCE_BYTES {
+        let _ = send_event(&mut socket, "error", "Program is too big (64 KB max).").await;
+        return;
+    }
+
+    let id = state.run_counter.fetch_add(1, Ordering::Relaxed);
+    let work_dir =
+        std::env::temp_dir().join(format!("eng-playground-{}-{}", std::process::id(), id));
+    run_play_session(&mut socket, &state, &source, &work_dir).await;
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+}
+
+async fn run_play_session(
+    socket: &mut WebSocket,
+    state: &AppState,
+    source: &str,
+    work_dir: &Path,
+) {
+    if setup_workdir(state, source, work_dir).await.is_err() {
+        let _ = send_event(socket, "error", "Could not set up the program.").await;
+        return;
+    }
+
+    send_event(socket, "compiling", "").await;
+    let compile = match capture(compile_command(state, work_dir, false), &[], COMPILE_TIMEOUT).await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = send_event(socket, "error", &e).await;
+            return;
+        }
+    };
+    if !compile.success || compile.timed_out {
+        let errors = if compile.stderr.trim().is_empty() {
+            compile.stdout
+        } else {
+            compile.stderr
+        };
+        let _ = send_event(socket, "compile_errors", &errors).await;
+        return;
+    }
+
+    let mut cmd = Command::new(work_dir.join("program"));
+    cmd.current_dir(work_dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(_) => {
+            let _ = send_event(socket, "error", "Could not start the program.").await;
+            return;
+        }
+    };
+    send_event(socket, "started", "").await;
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let mut out_buf = [0u8; 4096];
+    let mut err_buf = [0u8; 4096];
+    let mut stdout_done = false;
+    let mut stderr_done = false;
+    let mut exited: Option<bool> = None;
+    let mut sent_bytes = 0usize;
+    let mut timed_out = false;
+    let deadline = tokio::time::sleep(PLAY_TIMEOUT);
+    tokio::pin!(deadline);
+
+    loop {
+        tokio::select! {
+            n = stdout.read(&mut out_buf), if !stdout_done => {
+                match n {
+                    Ok(0) | Err(_) => stdout_done = true,
+                    Ok(n) => {
+                        sent_bytes += n;
+                        let text = String::from_utf8_lossy(&out_buf[..n]).to_string();
+                        if !send_event(socket, "stdout", &text).await { break; }
+                    }
+                }
+            }
+            n = stderr.read(&mut err_buf), if !stderr_done => {
+                match n {
+                    Ok(0) | Err(_) => stderr_done = true,
+                    Ok(n) => {
+                        sent_bytes += n;
+                        let text = String::from_utf8_lossy(&err_buf[..n]).to_string();
+                        if !send_event(socket, "stderr", &text).await { break; }
+                    }
+                }
+            }
+            status = child.wait(), if exited.is_none() => {
+                exited = Some(status.map(|s| s.success()).unwrap_or(false));
+            }
+            msg = socket.recv(), if exited.is_none() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        let Ok(parsed) = serde_json::from_str::<PlayClientMsg>(&text) else { continue };
+                        if parsed.stop { break; }
+                        if let Some(data) = parsed.stdin
+                            && data.len() <= MAX_INPUT_BYTES
+                            && stdin.write_all(data.as_bytes()).await.is_err()
+                        {
+                            continue;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => continue,
+                }
+            }
+            _ = &mut deadline => {
+                timed_out = true;
+                break;
+            }
+        }
+
+        if sent_bytes > MAX_PLAY_OUTPUT_BYTES {
+            let _ = send_event(socket, "truncated", "").await;
+            break;
+        }
+        if exited.is_some() && stdout_done && stderr_done {
+            break;
+        }
+    }
+
+    let _ = child.kill().await;
+    if timed_out {
+        let _ = send_event(socket, "timeout", "").await;
+    }
+    let _ = send_event(
+        socket,
+        "exit",
+        if exited.unwrap_or(false) { "ok" } else { "stopped" },
+    )
+    .await;
 }
 
 async fn read_capped(reader: impl tokio::io::AsyncRead + Unpin) -> (String, bool) {
