@@ -1298,6 +1298,11 @@ impl<'ctx> CodeGen<'ctx> {
         let scanf_type = i32_type.fn_type(&[ptr_type.into()], true); // varargs
         let c_scanf = self.module.add_function("scanf", scanf_type, None);
 
+        // fflush(NULL) before reading input, so prompts appear even when stdout is a pipe
+        let fflush_type = i32_type.fn_type(&[ptr_type.into()], false);
+        let c_fflush = self.module.add_function("fflush", fflush_type, None);
+        let null_ptr = ptr_type.const_null();
+
         // Get or declare snprintf (may already exist from float printing)
         let c_snprintf = self.module.get_function("snprintf").unwrap_or_else(|| {
             let snprintf_type =
@@ -1378,6 +1383,10 @@ impl<'ctx> CodeGen<'ctx> {
             let entry = self.context.append_basic_block(func, "entry");
             self.builder.position_at_end(entry);
 
+            self.builder
+                .build_call(c_fflush, &[null_ptr.into()], "flush_result")
+                .map_err(|e| e.to_string())?;
+
             // Allocate a buffer of 1024 bytes
             let buf_size = i64_type.const_int(1024, false);
             let buf_result = self
@@ -1433,6 +1442,10 @@ impl<'ctx> CodeGen<'ctx> {
                 .add_function("englang_readNumber", fn_type, None);
             let entry = self.context.append_basic_block(func, "entry");
             self.builder.position_at_end(entry);
+
+            self.builder
+                .build_call(c_fflush, &[null_ptr.into()], "flush_result")
+                .map_err(|e| e.to_string())?;
 
             // Allocate space for the number
             let num_ptr = self
