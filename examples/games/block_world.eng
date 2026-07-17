@@ -96,19 +96,19 @@ While running is equal to 1,
 
     If command is equal to "quit" then
         Set running to 0.
-    otherwise if command is equal to "north" then
+    otherwise if command is equal to "north" or command is equal to "up" then
         If playerRow is greater than 0 then
             Subtract 1 from playerRow.
         End.
-    otherwise if command is equal to "south" then
+    otherwise if command is equal to "south" or command is equal to "down" then
         If playerRow is less than MAP_SIZE - 1 then
             Add 1 to playerRow.
         End.
-    otherwise if command is equal to "west" then
+    otherwise if command is equal to "west" or command is equal to "left" then
         If playerCol is greater than 0 then
             Subtract 1 from playerCol.
         End.
-    otherwise if command is equal to "east" then
+    otherwise if command is equal to "east" or command is equal to "right" then
         If playerCol is less than MAP_SIZE - 1 then
             Add 1 to playerCol.
         End.
