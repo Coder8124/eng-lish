@@ -329,8 +329,8 @@ async fn capture(
         let _ = stdin.write_all(&data).await;
     });
 
-    let stdout_task = read_capped(child.stdout.take().unwrap());
-    let stderr_task = read_capped(child.stderr.take().unwrap());
+    let stdout_task = tokio::spawn(read_capped(child.stdout.take().unwrap()));
+    let stderr_task = tokio::spawn(read_capped(child.stderr.take().unwrap()));
 
     let mut timed_out = false;
     let status = match timeout(wall, child.wait()).await {
@@ -342,8 +342,8 @@ async fn capture(
         }
     };
 
-    let (stdout, out_trunc) = stdout_task.await;
-    let (stderr, err_trunc) = stderr_task.await;
+    let (stdout, out_trunc) = stdout_task.await.unwrap_or_default();
+    let (stderr, err_trunc) = stderr_task.await.unwrap_or_default();
 
     Ok(Captured {
         success: status.success(),
@@ -430,7 +430,9 @@ async fn run_play_session(
         }
     };
     if !compile.success || compile.timed_out {
-        let errors = if compile.stderr.trim().is_empty() {
+        let errors = if compile.timed_out {
+            "Compiling took too long and was stopped.".to_string()
+        } else if compile.stderr.trim().is_empty() {
             compile.stdout
         } else {
             compile.stderr
@@ -459,6 +461,8 @@ async fn run_play_session(
     let mut stderr = child.stderr.take().unwrap();
     let mut out_buf = [0u8; 4096];
     let mut err_buf = [0u8; 4096];
+    let mut out_pending: Vec<u8> = Vec::new();
+    let mut err_pending: Vec<u8> = Vec::new();
     let mut stdout_done = false;
     let mut stderr_done = false;
     let mut exited: Option<bool> = None;
@@ -471,21 +475,33 @@ async fn run_play_session(
         tokio::select! {
             n = stdout.read(&mut out_buf), if !stdout_done => {
                 match n {
-                    Ok(0) | Err(_) => stdout_done = true,
+                    Ok(0) | Err(_) => {
+                        stdout_done = true;
+                        let text = String::from_utf8_lossy(&out_pending).to_string();
+                        out_pending.clear();
+                        if !text.is_empty() && !send_event(socket, "stdout", &text).await { break; }
+                    }
                     Ok(n) => {
                         sent_bytes += n;
-                        let text = String::from_utf8_lossy(&out_buf[..n]).to_string();
-                        if !send_event(socket, "stdout", &text).await { break; }
+                        out_pending.extend_from_slice(&out_buf[..n]);
+                        let text = take_valid_utf8(&mut out_pending);
+                        if !text.is_empty() && !send_event(socket, "stdout", &text).await { break; }
                     }
                 }
             }
             n = stderr.read(&mut err_buf), if !stderr_done => {
                 match n {
-                    Ok(0) | Err(_) => stderr_done = true,
+                    Ok(0) | Err(_) => {
+                        stderr_done = true;
+                        let text = String::from_utf8_lossy(&err_pending).to_string();
+                        err_pending.clear();
+                        if !text.is_empty() && !send_event(socket, "stderr", &text).await { break; }
+                    }
                     Ok(n) => {
                         sent_bytes += n;
-                        let text = String::from_utf8_lossy(&err_buf[..n]).to_string();
-                        if !send_event(socket, "stderr", &text).await { break; }
+                        err_pending.extend_from_slice(&err_buf[..n]);
+                        let text = take_valid_utf8(&mut err_pending);
+                        if !text.is_empty() && !send_event(socket, "stderr", &text).await { break; }
                     }
                 }
             }
@@ -499,9 +515,12 @@ async fn run_play_session(
                         if parsed.stop { break; }
                         if let Some(data) = parsed.stdin
                             && data.len() <= MAX_INPUT_BYTES
-                            && stdin.write_all(data.as_bytes()).await.is_err()
                         {
-                            continue;
+                            let _ = timeout(
+                                Duration::from_secs(5),
+                                stdin.write_all(data.as_bytes()),
+                            )
+                            .await;
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
@@ -535,11 +554,49 @@ async fn run_play_session(
     .await;
 }
 
-async fn read_capped(reader: impl tokio::io::AsyncRead + Unpin) -> (String, bool) {
+fn take_valid_utf8(pending: &mut Vec<u8>) -> String {
+    match std::str::from_utf8(pending) {
+        Ok(s) => {
+            let text = s.to_string();
+            pending.clear();
+            text
+        }
+        Err(e) => {
+            let valid = e.valid_up_to();
+            if e.error_len().is_none() && pending.len() - valid < 4 {
+                let text = String::from_utf8_lossy(&pending[..valid]).to_string();
+                pending.drain(..valid);
+                text
+            } else {
+                let text = String::from_utf8_lossy(pending).to_string();
+                pending.clear();
+                text
+            }
+        }
+    }
+}
+
+async fn read_capped(
+    mut reader: impl tokio::io::AsyncRead + Unpin + Send + 'static,
+) -> (String, bool) {
     let mut buf = Vec::new();
-    let mut limited = reader.take(MAX_OUTPUT_BYTES as u64 + 1);
-    let _ = limited.read_to_end(&mut buf).await;
-    let truncated = buf.len() > MAX_OUTPUT_BYTES;
-    buf.truncate(MAX_OUTPUT_BYTES);
+    let mut chunk = [0u8; 8192];
+    let mut truncated = false;
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if buf.len() < MAX_OUTPUT_BYTES {
+                    let keep = n.min(MAX_OUTPUT_BYTES - buf.len());
+                    buf.extend_from_slice(&chunk[..keep]);
+                    if keep < n {
+                        truncated = true;
+                    }
+                } else {
+                    truncated = true;
+                }
+            }
+        }
+    }
     (String::from_utf8_lossy(&buf).to_string(), truncated)
 }
