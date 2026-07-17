@@ -38,3 +38,6 @@ examples/binaries/*
 playground/target/
 .playwright-mcp/
 !playground/static/index.html
+
+# macOS
+.DS_Store
