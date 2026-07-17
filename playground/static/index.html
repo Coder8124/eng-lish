@@ -255,7 +255,11 @@
   <select id="exampleSelect" title="Load an example">
     <option value="">Examples…</option>
   </select>
+  <select id="savedSelect" title="Load one of your saved programs" style="display:none">
+    <option value="">My programs…</option>
+  </select>
   <div class="spacer"></div>
+  <button id="saveBtn" title="Save this program in your browser (Ctrl+S)">Save 💾</button>
   <button id="shareBtn" title="Copy a link to this program">Share</button>
   <button id="calcBtn" title="Translate to TI-BASIC for your calculator">Calculator 📟</button>
   <button id="playBtn" title="Play interactively — type answers while the program runs">Play 🎮</button>
@@ -281,7 +285,7 @@
       <div class="tabpane hidden" id="calcPane"><span class="muted">Press Calculator 📟 to turn your program into TI-BASIC for a TI-83/84 calculator.</span></div>
       <div class="tabpane hidden" id="plotsPane"></div>
       <div class="play-row" id="playRow">
-        <input id="playInput" placeholder="Type your move and press Enter…" autocomplete="off">
+        <input id="playInput" placeholder="Type your move and press Enter — or just press the arrow keys…" autocomplete="off">
         <button id="playSend">Send</button>
       </div>
       <div class="status" id="status"></div>
@@ -471,10 +475,15 @@ async function runProgram(target) {
       const pane = document.getElementById('calcPane');
       if (data.success) {
         pane.textContent = data.tibasic;
+        const dl = document.createElement('button');
+        dl.textContent = 'Download 📥';
+        dl.style.marginTop = '12px';
+        dl.addEventListener('click', () => downloadCalcFile(data.tibasic));
+        pane.appendChild(dl);
         const note = document.createElement('div');
         note.className = 'muted';
         note.style.marginTop = '12px';
-        note.textContent = 'Paste this into TI Connect CE’s Program Editor (or SourceCoder) and send it to your TI-83/84.';
+        note.textContent = 'Paste this into TI Connect CE’s Program Editor (or SourceCoder) and send it to your TI-83/84 — or press Download to save it as a file.';
         pane.appendChild(note);
       } else {
         pane.innerHTML = '';
@@ -591,19 +600,25 @@ function startPlay() {
   ws.onerror = () => { if (playSocket === ws) endPlay('<span class="err">Could not reach the playground server.</span>'); };
 }
 
-function sendPlayLine() {
+function sendPlayLine(word) {
   if (!playSocket || playSocket.readyState !== WebSocket.OPEN) return;
-  const line = playInput.value;
+  const line = typeof word === 'string' ? word : playInput.value;
   playSocket.send(JSON.stringify({ stdin: line + '\n' }));
   appendTerm('› ' + line + '\n', 'echo');
   playInput.value = '';
   playInput.focus();
 }
 
+const ARROW_WORDS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
+
 playBtn.addEventListener('click', startPlay);
-document.getElementById('playSend').addEventListener('click', sendPlayLine);
+document.getElementById('playSend').addEventListener('click', () => sendPlayLine());
 playInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter') { e.preventDefault(); sendPlayLine(); }
+  if (e.key === 'Enter') { e.preventDefault(); sendPlayLine(); return; }
+  if (playInput.value === '' && ARROW_WORDS[e.key]) {
+    e.preventDefault();
+    sendPlayLine(ARROW_WORDS[e.key]);
+  }
 });
 
 document.getElementById('shareBtn').addEventListener('click', async () => {
@@ -636,7 +651,9 @@ let examplesList = [];
 function loadExample(ex) {
   editor.value = ex.source;
   stdin.value = ex.input || '';
+  currentName = '';
   renderHighlight();
+  saveDraft();
   history.replaceState(null, '', location.pathname);
   statusEl.innerHTML = '<span class="muted">' + esc(ex.description) + '</span>';
 }
@@ -669,7 +686,109 @@ async function loadExamples() {
   });
 }
 
-if (!loadFromHash()) {
+let currentName = '';
+const savedSelect = document.getElementById('savedSelect');
+
+function loadSavedList() {
+  try { return JSON.parse(localStorage.getItem('eng-saved-programs')) || []; }
+  catch { return []; }
+}
+
+function storeSavedList(list) {
+  try { localStorage.setItem('eng-saved-programs', JSON.stringify(list)); return true; }
+  catch { return false; }
+}
+
+function renderSavedSelect() {
+  const list = loadSavedList();
+  savedSelect.innerHTML = '<option value="">My programs…</option>';
+  list.forEach((p, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = p.name;
+    savedSelect.appendChild(opt);
+  });
+  savedSelect.style.display = list.length ? '' : 'none';
+}
+
+function saveProgram() {
+  const name = prompt('Name this program:', currentName || 'My program');
+  if (name === null) return;
+  const trimmed = name.trim().slice(0, 60) || 'My program';
+  const list = loadSavedList();
+  const entry = { name: trimmed, source: editor.value, input: stdin.value, savedAt: Date.now() };
+  const existing = list.findIndex(p => p.name === trimmed);
+  if (existing >= 0) list[existing] = entry; else list.push(entry);
+  if (!storeSavedList(list)) {
+    showToast('Could not save — browser storage is full or blocked.');
+    return;
+  }
+  currentName = trimmed;
+  renderSavedSelect();
+  showToast('Saved "' + trimmed + '" in this browser.');
+}
+
+savedSelect.addEventListener('change', () => {
+  if (savedSelect.value === '') return;
+  const saved = loadSavedList()[+savedSelect.value];
+  savedSelect.value = '';
+  if (!saved) return;
+  editor.value = saved.source;
+  stdin.value = saved.input || '';
+  currentName = saved.name;
+  renderHighlight();
+  saveDraft();
+  history.replaceState(null, '', location.pathname);
+  statusEl.innerHTML = '<span class="muted">Loaded "' + esc(saved.name) + '" — saved '
+    + new Date(saved.savedAt).toLocaleDateString() + '.</span> <a href="#" id="deleteSaved">Delete it</a>';
+  document.getElementById('deleteSaved').addEventListener('click', e => {
+    e.preventDefault();
+    storeSavedList(loadSavedList().filter(p => p.name !== saved.name));
+    currentName = '';
+    renderSavedSelect();
+    statusEl.innerHTML = '<span class="muted">Deleted "' + esc(saved.name) + '".</span>';
+  });
+});
+
+document.getElementById('saveBtn').addEventListener('click', saveProgram);
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveProgram(); }
+});
+
+function saveDraft() {
+  try {
+    localStorage.setItem('eng-draft', JSON.stringify({ source: editor.value, input: stdin.value }));
+  } catch {}
+}
+
+function loadDraft() {
+  try {
+    const draft = JSON.parse(localStorage.getItem('eng-draft'));
+    if (draft && draft.source) {
+      editor.value = draft.source;
+      stdin.value = draft.input || '';
+      renderHighlight();
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+editor.addEventListener('input', saveDraft);
+stdin.addEventListener('input', saveDraft);
+
+function downloadCalcFile(tibasic) {
+  const base = (currentName || 'program').replace(/[^\w -]+/g, '').trim().replace(/ +/g, '_') || 'program';
+  const blob = new Blob([tibasic], { type: 'text/plain' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = base + '.8xp.txt';
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+renderSavedSelect();
+if (!loadFromHash() && !loadDraft()) {
   editor.value = DEFAULT_PROGRAM;
   renderHighlight();
 }

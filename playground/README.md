@@ -16,8 +16,9 @@ Then open http://127.0.0.1:8080.
 
 - **Run ▶** compiles your program with `englishc` and runs it, showing the output. Ctrl+Enter (Cmd+Enter on Mac) works too.
 - **Program input** box: whatever you type there is fed to `readLine` / `readNumber`, one answer per line.
-- **Play 🎮** runs your program interactively: output streams in live, and you type answers in the box below the output while it runs. This is how you play the games in `examples/games/` (Pong, Kart race, Block world) — press Play, then type your move each turn. Press Stop ⏹ to end early.
-- **Calculator 📟** translates your program to TI-BASIC (same as `englishc --ti-basic`) and shows it in the Calculator tab.
+- **Play 🎮** runs your program interactively: output streams in live, and you type answers in the box below the output while it runs. This is how you play the games in `examples/games/` (Pong, Kart race, Block world) — press Play, then type your move each turn, or just press the arrow keys (they send `up`, `down`, `left`, `right` when the input box is empty). Press Stop ⏹ to end early.
+- **Calculator 📟** translates your program to TI-BASIC (same as `englishc --ti-basic`) and shows it in the Calculator tab, with a Download 📥 button that saves it as a `.8xp.txt` file.
+- **Save 💾** stores your program (and its input) in the browser under a name you pick — Ctrl+S works too. Saved programs appear in the "My programs…" dropdown, which also lets you delete them. The editor also autosaves as you type, so a refresh never loses your work. Everything stays in your browser (localStorage); nothing is sent to the server.
 - **Plots tab** appears when your program uses `plot` — the charts render right in the page.
 - **Share** copies a link with your program encoded in the URL. No account, no server storage.
 - **Examples** come from `playground/examples.json`, which points at files in `examples/` — so they can never drift from the repo.
