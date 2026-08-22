@@ -448,7 +448,8 @@ Contributions welcome. Areas of interest:
 ---
 
 ## License
-All Rights Reserved.
+
+MIT — see [LICENSE](LICENSE). You are free to use, modify, and distribute eng-lish, including in your own projects.
 
 ---
 
