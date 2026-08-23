@@ -14,9 +14,12 @@ output message.
 ## Installation
 
 ### Prerequisites
-- [Rust](https://rustup.rs/) (1.70+)
-- LLVM 18+ (`brew install llvm` on macOS)
+- [Rust](https://rustup.rs/) (1.85+, for edition 2024)
+- LLVM 21.1 exactly — `brew install llvm@21` on macOS, then set `LLVM_SYS_211_PREFIX`
 - Clang (for linking)
+
+LLVM 22 and LLVM 20 will not work: `inkwell` is pinned to one LLVM major version.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup.
 
 ### Build from source
 ```bash
