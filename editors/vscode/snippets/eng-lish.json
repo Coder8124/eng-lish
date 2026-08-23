@@ -1,0 +1,91 @@
+{
+  "Variable declaration": {
+    "prefix": "let",
+    "body": ["Let ${1:count} be a ${2|standard number,decimal,text,boolean,list|} with value ${3:0}."],
+    "description": "Declare a variable with a type and a starting value"
+  },
+  "Output": {
+    "prefix": "output",
+    "body": ["output ${1:\"Hello!\"}."],
+    "description": "Print a value"
+  },
+  "If": {
+    "prefix": "if",
+    "body": ["If ${1:count} is at least ${2:10} then", "\t$0", "End."],
+    "description": "If block"
+  },
+  "If / otherwise": {
+    "prefix": "ifelse",
+    "body": ["If ${1:count} is at least ${2:10} then", "\t$0", "otherwise", "\t", "End."],
+    "description": "If block with an otherwise branch"
+  },
+  "While loop": {
+    "prefix": "while",
+    "body": ["While ${1:count} is less than ${2:10},", "\t$0", "End."],
+    "description": "While loop (End. is required)"
+  },
+  "For each loop": {
+    "prefix": "foreach",
+    "body": ["For each ${1:index} from ${2:0} to ${3:10},", "\t$0", "End."],
+    "description": "Counting loop over a number range"
+  },
+  "Function": {
+    "prefix": "to",
+    "body": [
+      "To ${1:doubleIt} with a ${2:standard number} ${3:number} returning a ${4:standard number}:",
+      "\tGive back ${5:number}.",
+      "End."
+    ],
+    "description": "Function definition"
+  },
+  "Class": {
+    "prefix": "kind",
+    "body": [
+      "Define a kind called ${1:Dog} with the following:",
+      "\tProperty ${2:name} is a ${3:text}.",
+      "",
+      "\tTo create with a ${3:text} ${5:startingName}:",
+      "\t\tSet ${2:name} to ${5:startingName}.",
+      "\tEnd create.",
+      "",
+      "\tTo ${4:speak}:",
+      "\t\toutput ${2:name}.",
+      "\tEnd.",
+      "End kind."
+    ],
+    "description": "Class with a property, a constructor, and a method"
+  },
+  "Dictionary": {
+    "prefix": "dict",
+    "body": [
+      "Let ${1:ages} be a new dictionary from text to ${2:standard number}.",
+      "Set ${1:ages}[${3:\"Alice\"}] to ${4:12}."
+    ],
+    "description": "Create a dictionary and store a value"
+  },
+  "Read input": {
+    "prefix": "read",
+    "body": ["Let ${1:answer} be a text with value the result of readLine."],
+    "description": "Read a line of input from the user"
+  },
+  "Call a function": {
+    "prefix": "result",
+    "body": ["the result of ${1:functionName} with ${2:argument}"],
+    "description": "Call a function in an expression"
+  },
+  "Plot": {
+    "prefix": "plot",
+    "body": ["plot ${1:values} as a ${2|line,bar,scatter,histogram|} chart titled ${3:\"My chart\"} to ${4:\"chart.html\"}."],
+    "description": "Draw a chart to an HTML file"
+  },
+  "Use a package": {
+    "prefix": "use",
+    "body": ["use \"${1|numeric,algorithm,geometry,strings,math,game,neural|}\"."],
+    "description": "Import a package"
+  },
+  "Beginner mode": {
+    "prefix": "beginner",
+    "body": ["use beginner."],
+    "description": "Turn on beginner mode (untyped functions, friendly errors)"
+  }
+}

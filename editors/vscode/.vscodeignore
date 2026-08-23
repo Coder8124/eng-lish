@@ -1,0 +1,4 @@
+.vscode/**
+.gitignore
+generate-grammar.py
+**/*.map

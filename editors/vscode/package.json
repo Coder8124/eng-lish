@@ -1,0 +1,55 @@
+{
+  "name": "eng-lish",
+  "displayName": "eng-lish",
+  "description": "Syntax highlighting, snippets, and build tasks for the eng-lish programming language.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "publisher": "Coder8124",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Coder8124/eng-lish.git",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets"
+  ],
+  "keywords": [
+    "eng-lish",
+    "english",
+    "beginner",
+    "teaching"
+  ],
+  "icon": "icon.png",
+  "contributes": {
+    "languages": [
+      {
+        "id": "eng-lish",
+        "aliases": [
+          "eng-lish",
+          "english"
+        ],
+        "extensions": [
+          ".eng"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "eng-lish",
+        "scopeName": "source.eng",
+        "path": "./syntaxes/eng-lish.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "eng-lish",
+        "path": "./snippets/eng-lish.json"
+      }
+    ]
+  }
+}

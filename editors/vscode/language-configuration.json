@@ -1,0 +1,24 @@
+{
+  "comments": {
+    "lineComment": "Note:"
+  },
+  "brackets": [
+    ["(", ")"],
+    ["[", "]"]
+  ],
+  "autoClosingPairs": [
+    { "open": "(", "close": ")" },
+    { "open": "[", "close": "]" },
+    { "open": "\"", "close": "\"", "notIn": ["string"] }
+  ],
+  "surroundingPairs": [
+    ["(", ")"],
+    ["[", "]"],
+    ["\"", "\""]
+  ],
+  "wordPattern": "[A-Za-z_][A-Za-z0-9_]*",
+  "indentationRules": {
+    "increaseIndentPattern": "(?i:^\\s*(if\\b|while\\b|for each\\b|otherwise\\b|else\\b|to\\b.*:\\s*$|define\\b.*the following:\\s*$))",
+    "decreaseIndentPattern": "(?i:^\\s*(end|end kind|end create|otherwise|else)\\b)"
+  }
+}

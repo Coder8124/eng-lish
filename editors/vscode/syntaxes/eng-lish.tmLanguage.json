@@ -1,0 +1,159 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "eng-lish",
+  "scopeName": "source.eng",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#class-name"
+    },
+    {
+      "include": "#function-name"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#comparison"
+    },
+    {
+      "include": "#control"
+    },
+    {
+      "include": "#the-forms"
+    },
+    {
+      "include": "#arithmetic"
+    },
+    {
+      "include": "#plot"
+    },
+    {
+      "include": "#declaration"
+    },
+    {
+      "include": "#logical"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#builtins"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#operators"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "comment": "lexer.rs:6 -- `Note:` is the one case-SENSITIVE token",
+      "match": "Note:.*$",
+      "name": "comment.line.note.eng"
+    },
+    "strings": {
+      "name": "string.quoted.double.eng",
+      "begin": "\"",
+      "end": "\"",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.eng"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.eng"
+        }
+      },
+      "patterns": [
+        {
+          "comment": "lexer.rs:306-320 -- only these five escapes are real",
+          "match": "\\\\[ntr\"\\\\]",
+          "name": "constant.character.escape.eng"
+        }
+      ]
+    },
+    "class-name": {
+      "match": "(?i:\\bcalled\\b)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "entity.name.type.eng"
+        }
+      }
+    },
+    "function-name": {
+      "comment": "parser.rs:584 -- `To <name>` opens a function definition",
+      "match": "(?i:\\bto\\b)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?=(?i:with|returning)\\b|:)",
+      "captures": {
+        "1": {
+          "name": "entity.name.function.eng"
+        }
+      }
+    },
+    "types": {
+      "match": "(?i:\\b(?:lock and key list|unique collection|standard number|dictionary|fixed list|boolean|decimal|list|text)\\b)",
+      "name": "storage.type.eng"
+    },
+    "comparison": {
+      "match": "(?i:\\b(?:is not greater than or equal to|is not greater than or equal|is not less than or equal to|is greater than or equal to|is not less than or equal|is greater than or equal|is less than or equal to|is less than or equal|is not greater than|is not less than|is greater than|is not at least|is not equal to|is not at most|is not same to|is less than|is not equal|is at least|is equal to|is not same|is at most|is same to|is equal|is same|is not|is)\\b)",
+      "name": "keyword.operator.word.eng"
+    },
+    "control": {
+      "match": "(?i:\\b(?:otherwise if|end create|give back|otherwise|For each|end kind|while|call|else|skip|stop|then|ask|end|if)\\b)",
+      "name": "keyword.control.eng"
+    },
+    "the-forms": {
+      "match": "(?i:\\b(?:the result of asking|the remainder of|the quotient of|the result of|divided by|asking)\\b)",
+      "name": "keyword.other.eng"
+    },
+    "arithmetic": {
+      "match": "(?i:\\b(?:remainder|multiply|quotient|subtract|divided|divide|from|add|by|of)\\b)",
+      "name": "keyword.operator.word.eng"
+    },
+    "plot": {
+      "match": "(?i:\\b(?:histogram|against|scatter|titled|chart|line|plot|bar|as)\\b)",
+      "name": "keyword.other.plot.eng"
+    },
+    "declaration": {
+      "match": "(?i:\\b(?:the following|with value|following|returning|property|created|extends|nothing|called|create|define|output|remove|repeat|value|each|kind|with|for|let|set|use|an|be|to|a)\\b)",
+      "name": "keyword.declaration.eng"
+    },
+    "logical": {
+      "match": "(?i:\\b(?:negative|and|not|or)\\b)",
+      "name": "keyword.operator.word.eng"
+    },
+    "constants": {
+      "match": "(?i:\\b(?:true|false)\\b)",
+      "name": "constant.language.eng"
+    },
+    "builtins": {
+      "comment": "generated from src/stdlib.rs `names: vec![...]`",
+      "match": "\\b(?:standardDeviation|linearRegression|subtractVectors|absoluteValue|decimalToText|floatToString|newDictionary|predictLinear|randomBetween|textToDecimal|applySigmoid|applySoftmax|numberToText|textToNumber|vectorLength|arrayLength|characterAt|clearScreen|correlation|exponential|intToString|scaleVector|addVectors|arcTangent|dictRemove|dotProduct|naturalLog|parseFloat|randNormal|readNumber|repeatText|squareRoot|applyRelu|arcCosine|logarithm|lowercase|matVecMul|randomInt|removeKey|uppercase|writeFile|arrayMax|arrayMin|contains|dictKeys|dictSize|lengthOf|parseInt|readFile|readLine|variance|vecScale|arcSine|average|ceiling|cluster|combine|dictHas|fitLine|maximum|minimum|mseLoss|newDict|readnum|reverse|sigmoid|softmax|tangent|append|charAt|concat|cosine|hasKey|kMeans|keysOf|random|readln|sizeOf|stdDev|strlen|vecAdd|vecLen|vecSub|clear|delay|floor|input|lower|maxOf|minOf|power|range|round|sleep|upper|zeros|acos|asin|atan|ceil|corr|mean|ones|push|relu|sine|sqrt|wait|abs|cos|dot|exp|has|len|log|max|min|pow|sin|std|sum|tan|var|ln)\\b",
+      "name": "support.function.builtin.eng"
+    },
+    "numbers": {
+      "comment": "float first -- lexer.rs:325 needs digits on both sides",
+      "patterns": [
+        {
+          "match": "\\b[0-9]+\\.[0-9]+\\b",
+          "name": "constant.numeric.float.eng"
+        },
+        {
+          "match": "\\b[0-9]+\\b",
+          "name": "constant.numeric.integer.eng"
+        }
+      ]
+    },
+    "operators": {
+      "match": "[+\\-*/]",
+      "name": "keyword.operator.eng"
+    }
+  }
+}
