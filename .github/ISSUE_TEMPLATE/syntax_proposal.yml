@@ -1,0 +1,72 @@
+name: Syntax or feature proposal
+description: Suggest new eng-lish syntax, or a new built-in or package
+labels: ["proposal"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        eng-lish syntax is meant to read like ordinary English sentences, and to make sense to someone who is twelve and has never programmed before. Proposals are judged on whether they read well out loud, not only on whether they are useful.
+
+        Before writing, it is worth skimming [the language specification](../../docs/spec/index.md) to see what already exists and which words are already taken.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to write today, and why is it awkward?
+      description: Show the eng-lish you have to write now, if there is a way to write it at all.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: The sentence you would like to write instead
+      description: Give the exact English form, with the parts that vary marked clearly.
+      render: text
+      placeholder: For each name in guests,
+    validations:
+      required: true
+
+  - type: textarea
+    id: examples
+    attributes:
+      label: Two or three example programs using it
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: meaning
+    attributes:
+      label: What it means
+      description: If this is a shorthand for something eng-lish can already do, say what it turns into. If it is genuinely new, describe what types it accepts and what it produces.
+    validations:
+      required: true
+
+  - type: textarea
+    id: collisions
+    attributes:
+      label: Words it might collide with
+      description: "Does your proposal reuse a word that is already a keyword? Every keyword is listed in `src/lexer.rs` and in the specification. Remember that keywords are case-insensitive, and that multi-word keywords are matched as a single unit."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: calculator
+    attributes:
+      label: Could this work on a TI-83/84 calculator?
+      description: eng-lish has a TI-BASIC backend in `src/tibasic.rs`. Features that cannot be expressed there still get accepted, but it is useful to know up front.
+      options:
+        - Yes
+        - "No, it needs something calculators do not have"
+        - I am not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Would you like to implement it?
+      options:
+        - label: I would like to try implementing this myself
+          required: false

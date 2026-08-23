@@ -1,0 +1,78 @@
+name: Bug report
+description: Something in eng-lish behaves the wrong way
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. The most useful thing you can give us is a small program that shows the problem.
+
+  - type: textarea
+    id: program
+    attributes:
+      label: A program that shows the problem
+      description: The smallest eng-lish program that still goes wrong. Please paste the whole thing, not a fragment.
+      render: text
+      placeholder: |
+        Let count be a standard number with value 5.
+        output count.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Paste the compiler output or the program output exactly as it appeared, including any error message.
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where it goes wrong
+      options:
+        - It will not compile
+        - It compiles but prints the wrong thing
+        - It compiles but crashes when it runs
+        - The compiler itself crashed
+        - Something else
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Which build of eng-lish
+      description: "Run `git rev-parse --short HEAD` in the repo, or say how you installed it."
+      placeholder: c10b4f6
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and LLVM version
+      placeholder: macOS 15.5, LLVM 21.1.8
+    validations:
+      required: true
+
+  - type: dropdown
+    id: playground
+    attributes:
+      label: Does it also happen in the playground?
+      description: Run the playground with `cd playground && cargo run`, or try it in a hosted one if you have it.
+      options:
+        - Yes, same problem there
+        - No, the playground is fine
+        - I did not try
+    validations:
+      required: true

@@ -132,7 +132,6 @@ Tests live in a `#[cfg(test)] mod tests` block at the bottom of the file they te
 - One commit per logical change, not one big commit at the end.
 - Subject line in the imperative mood, capitalized, no type prefix, no trailing period: `Add dictionary literals`, `Fix off-by-one in list indexing`.
 - If a change needs explaining, leave a blank line after the subject and use dash bullets.
-- **Never add `Co-Authored-By` trailers or any AI attribution to commit messages.**
 - Say in the pull request what you changed, how you tested it, and which docs you updated.
 
 ## Good first contributions

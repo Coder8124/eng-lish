@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: How to contribute
+    url: https://github.com/Coder8124/eng-lish/blob/main/CONTRIBUTING.md
+    about: Setting up the compiler, where the code lives, and how to send a change.
+  - name: Language reference
+    url: https://github.com/Coder8124/eng-lish/blob/main/docs/language-reference/index.md
+    about: Learn how a feature works before reporting it as a bug.
+  - name: Language specification
+    url: https://github.com/Coder8124/eng-lish/blob/main/docs/spec/index.md
+    about: Exactly what the compiler accepts, keyword by keyword.

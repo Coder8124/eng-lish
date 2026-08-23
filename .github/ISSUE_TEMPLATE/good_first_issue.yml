@@ -1,0 +1,84 @@
+name: Good first issue (maintainers)
+description: File a well-scoped task for a first-time contributor
+labels: ["good first issue", "help wanted"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For maintainers filing work that someone new could pick up. Fill in enough detail that a stranger can finish it without asking a follow-up question.
+
+  - type: textarea
+    id: task
+    attributes:
+      label: The task
+      description: What needs to be done, in plain English.
+    validations:
+      required: true
+
+  - type: textarea
+    id: background
+    attributes:
+      label: Why it matters
+      description: What is better once this is done.
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Files to look at
+      description: Point at the exact files, and line numbers if you have them.
+      placeholder: |
+        - src/stdlib.rs — add the entry here
+        - src/codegen.rs — implement it here
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: How we will know it is finished
+      description: A checklist the contributor can work through.
+      placeholder: |
+        - [ ] The new function compiles and runs
+        - [ ] A test covers it
+        - [ ] The docs page is updated
+    validations:
+      required: true
+
+  - type: dropdown
+    id: size
+    attributes:
+      label: Rough size
+      options:
+        - Small — an hour or two
+        - Medium — an afternoon
+        - Large — a weekend
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: What kind of work is it?
+      options:
+        - Documentation
+        - A new package (no Rust needed)
+        - A new built-in function
+        - Compiler — lexer or parser
+        - Compiler — type checking
+        - Compiler — code generation
+        - TI-BASIC backend
+        - Playground
+        - Editor support
+        - Tests
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: docs
+    attributes:
+      label: Documentation
+      options:
+        - label: This change needs a documentation update to be considered done
+          required: false
