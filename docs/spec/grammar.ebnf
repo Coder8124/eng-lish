@@ -1,0 +1,249 @@
+(* ==========================================================================
+   eng-lish grammar
+   Describes the reference implementation (englishc) at commit a0e8b77.
+
+   Every quoted keyword is matched CASE-INSENSITIVELY. The one exception is
+   the comment marker "Note:", which requires its capital N.
+
+   Multi-word keywords ("standard number", "lock and key list",
+   "is greater than or equal to", ...) are single indivisible tokens and
+   must be written with exactly one space between the words.
+
+   Whitespace and line breaks are insignificant.
+
+   Notation:  [ x ]  optional      { x }  zero or more
+              x | y  alternatives  ( x )  grouping
+   ========================================================================== *)
+
+
+(* ------------------------------ program ---------------------------------- *)
+
+program        = { import | mode | function | class | statement } ;
+
+import         = "use" text-literal "." ;
+mode           = "use" "beginner" "." ;
+
+
+(* ------------------------------- types ----------------------------------- *)
+
+type           = "text"
+               | "standard number"
+               | "decimal"
+               | "boolean"
+               | "list" [ "of" type ]
+               | dictionary-type
+               | "fixed list"                    (* parses; unusable *)
+               | "unique collection" [ "of" type ]  (* parses; unusable *)
+               | identifier ;                    (* a class name *)
+
+dictionary-type = ( "dictionary" | "lock and key list" )
+                  [ ( "from" | "of" ) type "to" type ] ;
+                  (* the key type must be text *)
+
+return-type    = [ article ] type | "nothing" ;
+
+article        = "a" | "an" ;
+
+
+(* ---------------------------- declarations -------------------------------- *)
+
+function       = "To" identifier [ "with" parameters ]
+                 [ "returning" return-type ] ":"
+                 block
+                 "End" "." ;
+
+parameters     = parameter { "and" parameter } ;
+parameter      = [ article ] type identifier ;
+
+(* beginner mode only: types omitted *)
+beginner-function = "To" identifier [ identifier { "and" identifier } ] ":"
+                    block
+                    "End" "." ;
+
+class          = "Define" [ article ] "kind" "called" identifier
+                 [ "that" "extends" identifier ]
+                 "with the following" ":"
+                 { property | constructor | method }
+                 "End kind" "." ;
+
+property       = "Property" identifier "is" [ article ] type "." ;
+
+constructor    = "To create" [ "with" parameters ] ":"
+                 block
+                 "End create" "." ;
+
+method         = "To" identifier [ "with" parameters ]
+                 [ "returning" return-type ] ":"
+                 block
+                 "End" "." ;
+
+
+(* ----------------------------- statements --------------------------------- *)
+
+block          = { statement } ;
+
+statement      = declaration
+               | dict-declaration
+               | object-declaration
+               | assignment
+               | compound-assignment
+               | output
+               | if
+               | while
+               | for-each
+               | loop-control
+               | call
+               | ask
+               | return
+               | remove
+               | plot
+               | expression-statement ;
+
+declaration    = "Let" identifier "be" [ article ] type
+                 "with value" expression "." ;
+
+dict-declaration = "Let" identifier "be" [ article ] ( "new" | "empty" )
+                   ( "dictionary" | "lock and key list" )
+                   [ ( "from" | "of" ) type "to" type ] "." ;
+
+object-declaration = "Let" identifier "be" [ article ] identifier
+                     "created with" arguments "." ;
+
+assignment     = "Set" identifier "to" expression "."
+               | "Set" identifier "[" expression "]" "to" expression "."
+               | "Set" "the" identifier "of" identifier "to" expression "." ;
+
+compound-assignment
+               = "Add" expression "to" identifier "."
+               | "Subtract" expression "from" identifier "."
+               | "Multiply" identifier "by" expression "."
+               | "Divide" identifier "by" expression "."
+               | "Multiply" expression "to" identifier "."     (* legacy *)
+               | "Divide" expression "from" identifier "." ;   (* legacy *)
+
+output         = "output" expression "." ;
+
+(* the closing End is OPTIONAL after If, but required for while / for each *)
+if             = "If" expression [ "then" ] [ "," ] block
+                 { otherwise "if" expression [ "then" ] [ "," ] block }
+                 [ otherwise [ "," ] block ]
+                 [ "End" [ "." ] ] ;
+
+otherwise      = "otherwise" | "else" ;
+
+while          = "While" expression [ "," ] block "End" "." ;
+
+for-each       = "For each" identifier "from" expression "to" expression
+                 [ "," ] block "End" "." ;
+                 (* counts over whole numbers, inclusive; there is no
+                    "for each x in list" form *)
+
+loop-control   = "stop" "." | "skip" "." ;
+
+call           = "Call" identifier [ "with" arguments ] "." ;
+
+ask            = "Ask" identifier "to" identifier [ "with" arguments ] "." ;
+
+return         = "Give back" [ expression ] "." ;
+
+remove         = "Remove" expression "from" identifier "." ;
+
+plot           = "plot" expression [ "against" expression ]
+                 [ "as" [ article ] chart-kind [ "chart" ] [ "plot" ] ]
+                 [ "titled" text-literal ]
+                 "to" text-literal "." ;
+
+chart-kind     = "line" | "bar" | "scatter" | "histogram" ;
+
+(* only when the sentence begins with an identifier *)
+expression-statement = expression "." ;
+
+
+(* ---------------------------- expressions ---------------------------------
+   Listed loosest to tightest. All binary levels group left to right.
+   -------------------------------------------------------------------------- *)
+
+expression     = or-expression ;
+
+or-expression  = and-expression { "or" and-expression } ;
+
+and-expression = comparison { "and" comparison } ;
+
+comparison     = additive { "is" [ "not" ] comparison-op additive } ;
+
+comparison-op  = "equal" [ "to" ]
+               | "same" [ "to" ]
+               | "greater" "than" [ "or" "equal" [ "to" ] ]
+               | "less" "than" [ "or" "equal" [ "to" ] ]
+               | "at least"
+               | "at most" ;
+                 (* "is the same as" is NOT accepted *)
+
+additive       = multiplicative { ( "+" | "-" ) multiplicative } ;
+
+multiplicative = term { ( "*" | "/" ) term } ;
+
+term           = [ ( "remainder" | "quotient" ) ] unary [ "by" unary ] ;
+
+unary          = [ "not" | "negative" ] postfix ;
+                 (* there is no unary minus; write "negative 5" *)
+
+postfix        = primary { "[" expression "]" } ;
+
+primary        = integer-literal
+               | decimal-literal
+               | text-literal
+               | boolean-literal
+               | list-literal
+               | conversion
+               | the-form
+               | object-creation
+               | beginner-call
+               | identifier
+               | "(" expression ")" ;
+
+list-literal   = "[" [ expression { "," expression } ] "]" ;
+                 (* commas here, unlike argument lists; no dictionary
+                    literal exists *)
+
+conversion     = ( "standard number" | "decimal" | "text" ) "of" primary ;
+                 (* operand is a primary, not a full expression *)
+
+the-form       = "the result of" identifier [ "with" arguments ]
+               | "the result of asking" identifier "to" identifier
+                 [ "with" arguments ]
+               | "the" identifier "of" identifier          (* property read *)
+               | the-division ;
+
+the-division   = "the" ( "remainder" | "quotient" ) "of" unary
+                 [ "divided" ] "by" unary ;
+
+object-creation = identifier "created with" arguments ;
+                 (* there is no "new" operator *)
+
+(* beginner mode only *)
+beginner-call  = identifier "of" arguments ;
+
+arguments      = expression { "and" expression } ;
+                 (* separated by "and", so a logical "and" in an argument
+                    must be parenthesised *)
+
+
+(* ------------------------------- lexical ---------------------------------- *)
+
+comment        = "Note:" { character - newline } ;   (* case-sensitive *)
+
+identifier     = ( letter | "_" ) { letter | digit | "_" } ;
+
+integer-literal = digit { digit } ;                   (* never negative *)
+
+decimal-literal = digit { digit } "." digit { digit } ;
+                 (* digits required on BOTH sides, so "3." is an integer
+                    followed by a sentence-ending period *)
+
+text-literal   = '"' { character | escape } '"' ;
+
+escape         = "\n" | "\t" | "\r" | '\"' | "\\" ;
+                 (* any other backslash sequence is kept literally *)
+
+boolean-literal = "true" | "false" ;

@@ -440,13 +440,24 @@ End.
 
 ---
 
+## Documentation
+
+- [Language reference](docs/language-reference/index.md) — learn a feature, with examples
+- [Language specification](docs/spec/index.md) — exactly what the compiler accepts
+- [Contributing guide](CONTRIBUTING.md) — set up the compiler and send a change
+
+---
+
 ## Contributing
 
-Contributions welcome. Areas of interest:
+Contributions welcome — start with [CONTRIBUTING.md](CONTRIBUTING.md), which lists good first issues.
+
+Areas of interest:
+
 - More packages
 - Better error messages
 - Language server (LSP) support
-- Syntax highlighting for editors
+- Editor support beyond VS Code (see [`editors/vscode`](editors/vscode))
 
 ---
 

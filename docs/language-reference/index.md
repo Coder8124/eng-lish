@@ -2,6 +2,8 @@
 
 Welcome to the eng-lish language reference. Each page covers one part of the language with examples you can run.
 
+Looking for the exact rules instead? The [language specification](../spec/index.md) defines precisely what the compiler accepts, keyword by keyword. These pages teach; the specification defines.
+
 ## Core Language
 
 | Feature | Summary |
