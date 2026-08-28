@@ -4,6 +4,27 @@ eng-lish is a compiled programming language whose syntax is English sentences. I
 
 Contributions are welcome, whether that is a bug report, a documentation page, a new package, or a change to the compiler itself.
 
+## Try it first, install nothing
+
+If you just want to see whether you like the language, open the repository in a
+GitHub Codespace:
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/Coder8124/eng-lish)
+
+That gives you VS Code in your browser with Rust, LLVM 21.1 and clang already
+installed. It builds the compiler once, then opens the playground at
+`localhost:8080` where you can write a program and press Run. Nothing lands on
+your own machine, and `.eng` files are syntax highlighted because the extension
+in `editors/vscode` is loaded for you.
+
+The first build takes a few minutes. After that it is instant.
+
+The same setup works locally if you have Docker and VS Code: open the folder and
+choose **Reopen in Container**. See [`.devcontainer/`](.devcontainer/).
+
+Once you know you want to work on the compiler itself, set up a real local
+toolchain below — it is much faster to iterate on.
+
 ## What you need first
 
 | You need | Why |

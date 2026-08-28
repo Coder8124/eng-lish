@@ -39,5 +39,8 @@ playground/target/
 .playwright-mcp/
 !playground/static/index.html
 
+# Devcontainer runtime logs
+.devcontainer/logs/
+
 # macOS
 .DS_Store

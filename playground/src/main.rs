@@ -127,10 +127,11 @@ async fn main() {
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080);
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+    let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let listener = tokio::net::TcpListener::bind((host.as_str(), port))
         .await
         .unwrap();
-    println!("eng-lish playground running at http://127.0.0.1:{port}");
+    println!("eng-lish playground running at http://{host}:{port}");
     axum::serve(listener, app).await.unwrap();
 }
 

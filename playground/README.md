@@ -12,6 +12,10 @@ cargo run
 
 Then open http://127.0.0.1:8080.
 
+If you would rather not install LLVM, open the repo in a
+[Codespace](https://codespaces.new/Coder8124/eng-lish) instead — the playground
+builds and starts on its own. See [`.devcontainer/`](../.devcontainer/).
+
 ## What it does
 
 - **Run ▶** compiles your program with `englishc` and runs it, showing the output. Ctrl+Enter (Cmd+Enter on Mac) works too.
@@ -41,4 +45,5 @@ Each run happens in its own temp directory that is deleted afterwards, with a 5 
 | Env var | Default | Meaning |
 |---------|---------|---------|
 | `PORT` | `8080` | Port to listen on |
+| `HOST` | `127.0.0.1` | Address to bind. Set to `0.0.0.0` only inside a container you are port-forwarding from — read the Limits section first |
 | `ENGLISHC` | `../target/release/englishc`, then `../target/debug/englishc` | Path to the compiler |

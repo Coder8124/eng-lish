@@ -1,0 +1,21 @@
+{
+  "name": "eng-lish",
+  "build": { "dockerfile": "Dockerfile" },
+  "postCreateCommand": ".devcontainer/setup.sh",
+  "postAttachCommand": ".devcontainer/start-playground.sh",
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": {
+      "label": "eng-lish playground",
+      "onAutoForward": "openPreview"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer"],
+      "settings": {
+        "editor.wordWrap": "on"
+      }
+    }
+  }
+}

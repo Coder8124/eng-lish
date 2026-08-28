@@ -11,6 +11,15 @@ output message.
 
 ---
 
+## Try it without installing anything
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/Coder8124/eng-lish)
+
+Opens VS Code in your browser with the compiler and the playground ready to go —
+write a program, press Run, see the output. Nothing is installed on your machine.
+
+---
+
 ## Installation
 
 ### Prerequisites
