@@ -8937,3 +8937,408 @@ impl<'ctx> CodeGen<'ctx> {
         println!("{}", self.module.print_to_string().to_string());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::Parser;
+    use crate::semantic::SemanticAnalyzer;
+    use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static WORKDIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn check(source: &str) -> Result<Program, String> {
+        let mut program = Parser::parse(source).map_err(|e| e.to_string())?;
+        let mut analyzer = SemanticAnalyzer::new();
+        analyzer.analyze(&program).map_err(|errors| {
+            errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        })?;
+        analyzer.patch_program_types(&mut program);
+        Ok(program)
+    }
+
+    fn ir(source: &str) -> String {
+        try_ir(source).expect("expected the program to compile")
+    }
+
+    fn try_ir(source: &str) -> Result<String, String> {
+        let program = check(source)?;
+        let context = Context::create();
+        let mut codegen = CodeGen::new(&context, "test");
+        codegen.compile(&program)?;
+        Ok(codegen.module.print_to_string().to_string())
+    }
+
+    /// Compiles, links and executes the program, returning its stdout.
+    /// Requires clang, the same as a real build.
+    fn run(source: &str) -> String {
+        let program = check(source).expect("expected the program to compile");
+        let context = Context::create();
+        let mut codegen = CodeGen::new(&context, "test");
+        codegen.compile(&program).expect("codegen failed");
+
+        let id = WORKDIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("englishc-test-{}-{}", std::process::id(), id));
+        std::fs::create_dir_all(&dir).unwrap();
+        let obj = dir.join("test.o");
+        let exe = dir.join("test");
+
+        codegen.write_object_file(&obj).expect("write object file");
+        let link = Command::new("clang")
+            .args([obj.to_str().unwrap(), "-o", exe.to_str().unwrap(), "-lm"])
+            .status()
+            .expect("clang must be installed to run codegen tests");
+        assert!(link.success(), "linking failed");
+
+        let output = Command::new(&exe).output().expect("running the program");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            output.status.success(),
+            "program exited with {:?}",
+            output.status.code()
+        );
+        String::from_utf8_lossy(&output.stdout).to_string()
+    }
+
+    // ========== Module structure ==========
+
+    #[test]
+    fn emits_main_and_printf() {
+        let out = ir(r#"output "hi"."#);
+        assert!(out.contains("define i32 @main()"));
+        assert!(out.contains("declare i32 @printf"));
+    }
+
+    #[test]
+    fn declares_user_functions_before_main() {
+        let out = ir("To triple with a standard number n returning a standard number:
+    Give back n * 3.
+End.
+output the result of triple with 7.");
+        assert!(out.contains("define i64 @triple(i64"));
+    }
+
+    #[test]
+    fn class_becomes_a_struct_type() {
+        let out = ir("Define a kind called Point with the following:
+    Property x is a standard number.
+    To create with a standard number startX:
+        Set x to startX.
+    End create.
+End kind.
+let p be a Point created with 3.");
+        assert!(out.contains("%class.Point = type"));
+    }
+
+    #[test]
+    fn loops_emit_branches() {
+        let out = ir("For each i from 1 to 3,
+    output i.
+End.");
+        assert!(out.contains("br "));
+    }
+
+    // ========== Type resolution ==========
+
+    #[test]
+    fn beginner_inferred_types_reach_codegen_resolved() {
+        let out = ir("use beginner.
+To double x returning a standard number:
+    Give back x * 2.
+End.
+output double of 21.");
+        assert!(out.contains("define i64 @double(i64"));
+    }
+
+    // Conversions of a literal are constant-folded away, so these go through a
+    // variable to keep the instruction in the IR.
+
+    #[test]
+    fn int_to_decimal_conversion_is_supported() {
+        let out = ir("let n be a standard number with value 3.
+output decimal of n.");
+        assert!(out.contains("sitofp"));
+    }
+
+    #[test]
+    fn decimal_to_int_conversion_is_supported() {
+        let out = ir("let d be a decimal with value 3.5.
+output standard number of d.");
+        assert!(out.contains("fptosi"));
+    }
+
+    /// The semantic analyzer accepts seven conversions but codegen implements
+    /// only Int <-> Float, so these pass the type checker and fail here.
+    /// Delete this test when the conversions are implemented.
+    #[test]
+    fn text_conversions_are_rejected_by_codegen() {
+        for source in [
+            "output text of 3.",
+            "output text of 3.5.",
+            "output text of true.",
+            r#"output standard number of "42"."#,
+            r#"output decimal of "4.5"."#,
+        ] {
+            let err = try_ir(source)
+                .expect_err("conversion is unimplemented in codegen and should fail");
+            assert!(
+                err.contains("Unsupported type conversion"),
+                "unexpected error for `{source}`: {err}"
+            );
+        }
+    }
+
+    // ========== Values and arithmetic ==========
+
+    #[test]
+    fn prints_each_kind_of_literal() {
+        assert_eq!(run("output 7."), "7\n");
+        assert_eq!(run(r#"output "hi"."#), "hi\n");
+        assert_eq!(run("output true.\noutput false."), "1\n0\n");
+    }
+
+    #[test]
+    fn decimals_always_print_a_fractional_part() {
+        assert_eq!(run("output 2.5.\noutput 4.0."), "2.5\n4.0\n");
+    }
+
+    #[test]
+    fn multiplication_binds_tighter_than_addition() {
+        assert_eq!(run("output 2 + 3 * 4."), "14\n");
+    }
+
+    #[test]
+    fn division_follows_the_operand_types() {
+        assert_eq!(run("output 7 / 2."), "3\n");
+        assert_eq!(run("output 7.0 / 2.0."), "3.5\n");
+    }
+
+    #[test]
+    fn remainder_and_quotient() {
+        assert_eq!(
+            run("output the remainder of 17 divided by 5.
+output the quotient of 17 divided by 5."),
+            "2\n3\n"
+        );
+    }
+
+    #[test]
+    fn negative_produces_a_negated_value() {
+        assert_eq!(run("output negative 5."), "-5\n");
+    }
+
+    #[test]
+    fn compound_assignment_updates_in_place() {
+        assert_eq!(
+            run("let total be a standard number with value 10.
+Add 5 to total.
+Subtract 2 from total.
+Multiply total by 3.
+Divide total by 2.
+output total."),
+            "19\n"
+        );
+    }
+
+    #[test]
+    fn logical_operators() {
+        assert_eq!(
+            run("output true and false.
+output true or false.
+output not true."),
+            "0\n1\n0\n"
+        );
+    }
+
+    #[test]
+    fn comparisons() {
+        assert_eq!(
+            run("output 3 is less than 5.
+output 3 is greater than 5.
+output 5 is at least 5.
+output 4 is at most 3.
+output 3 is equal to 3.
+output 3 is not equal to 3."),
+            "1\n0\n1\n0\n1\n0\n"
+        );
+    }
+
+    // ========== Control flow ==========
+
+    #[test]
+    fn if_otherwise_chain_picks_one_branch() {
+        assert_eq!(
+            run(r#"let score be a standard number with value 85.
+If score is at least 90 then
+    output "A".
+otherwise if score is at least 80 then
+    output "B".
+otherwise
+    output "C".
+End."#),
+            "B\n"
+        );
+    }
+
+    #[test]
+    fn for_each_bounds_are_inclusive() {
+        assert_eq!(
+            run("For each i from 1 to 3,
+    output i.
+End."),
+            "1\n2\n3\n"
+        );
+    }
+
+    #[test]
+    fn while_loop_with_stop_and_skip() {
+        assert_eq!(
+            run("let n be a standard number with value 0.
+While n is less than 10,
+    Add 1 to n.
+    If the remainder of n divided by 2 is equal to 0 then
+        skip.
+    End.
+    If n is greater than 7 then
+        stop.
+    End.
+    output n.
+End."),
+            "1\n3\n5\n7\n"
+        );
+    }
+
+    #[test]
+    fn nested_loops_break_only_the_inner_one() {
+        assert_eq!(
+            run("For each i from 1 to 3,
+    For each j from 1 to 3,
+        If j is equal to 2 then
+            stop.
+        End.
+        output j.
+    End.
+    output i.
+End."),
+            "1\n1\n1\n2\n1\n3\n"
+        );
+    }
+
+    // ========== Functions and classes ==========
+
+    #[test]
+    fn function_call_returns_a_value() {
+        assert_eq!(
+            run("To triple with a standard number n returning a standard number:
+    Give back n * 3.
+End.
+output the result of triple with 7."),
+            "21\n"
+        );
+    }
+
+    #[test]
+    fn recursion_works() {
+        assert_eq!(
+            run("To fib with a standard number n returning a standard number:
+    If n is less than 2 then
+        Give back n.
+    End.
+    let a be a standard number with value the result of fib with n - 1.
+    let b be a standard number with value the result of fib with n - 2.
+    Give back a + b.
+End.
+output the result of fib with 10."),
+            "55\n"
+        );
+    }
+
+    #[test]
+    fn class_methods_and_property_reads() {
+        assert_eq!(
+            run("Define a kind called Counter with the following:
+    Property count is a standard number.
+    To create with a standard number initial:
+        Set count to initial.
+    End create.
+    To bump returning nothing:
+        Add 1 to count.
+    End.
+    To getValue returning a standard number:
+        Give back count.
+    End.
+End kind.
+let c be a Counter created with 5.
+Ask c to bump.
+output the result of asking c to getValue.
+output the count of c."),
+            "6\n6\n"
+        );
+    }
+
+    // ========== Collections and text ==========
+
+    #[test]
+    fn list_indexing_and_assignment() {
+        assert_eq!(
+            run("let nums be a list of standard number with value [10, 20, 30].
+output nums[0].
+output nums[2].
+Set nums[1] to 99.
+output nums[1]."),
+            "10\n30\n99\n"
+        );
+    }
+
+    #[test]
+    fn list_builtins() {
+        assert_eq!(
+            run("let nums be a list of standard number with value [10, 20, 30].
+output the result of arrayLength with nums.
+let more be a list of standard number with value the result of append with nums and 40.
+output the result of arrayLength with more.
+output more[3]."),
+            "3\n4\n40\n"
+        );
+    }
+
+    #[test]
+    fn dictionary_operations() {
+        assert_eq!(
+            run(r#"Let ages be a new dictionary.
+Set ages["Alice"] to 12.
+Set ages["Bob"] to 15.
+output ages["Alice"].
+output the result of sizeOf with ages.
+output the result of hasKey with ages and "Bob".
+Remove "Bob" from ages.
+output the result of sizeOf with ages."#),
+            "12\n2\n1\n1\n"
+        );
+    }
+
+    #[test]
+    fn text_builtins() {
+        assert_eq!(
+            run(r#"output the result of combine with "Hello, " and "World".
+output the result of lengthOf with "abcde".
+output the result of uppercase with "shout".
+output the result of contains with "haystack" and "stack"."#),
+            "Hello, World\n5\nSHOUT\n1\n"
+        );
+    }
+
+    #[test]
+    fn math_builtins_promote_ints_to_decimals() {
+        assert_eq!(
+            run("output the result of squareRoot with 16.
+output the result of absoluteValue with negative 3."),
+            "4.0\n3.0\n"
+        );
+    }
+}
