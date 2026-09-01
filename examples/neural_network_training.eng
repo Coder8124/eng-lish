@@ -1,0 +1,29 @@
+use "neural".
+
+output "Training a network to learn the AND gate".
+
+let net be a NeuralNetwork created with 2 and 4 and 1 and "relu" and "sigmoid" and 0.5.
+
+let x0 be a list of decimal with value [0.0, 0.0].
+let x1 be a list of decimal with value [0.0, 1.0].
+let x2 be a list of decimal with value [1.0, 0.0].
+let x3 be a list of decimal with value [1.0, 1.0].
+let inputs be a list of list of decimal with value [x0, x1, x2, x3].
+
+let y0 be a list of decimal with value [0.0].
+let y1 be a list of decimal with value [0.0].
+let y2 be a list of decimal with value [0.0].
+let y3 be a list of decimal with value [1.0].
+let targets be a list of list of decimal with value [y0, y1, y2, y3].
+
+Call trainNetwork with net and inputs and targets and 4 and 2000.
+
+output "Predictions after training (want close to 0,0,0,1):".
+let p0 be a list of decimal with value the result of asking net to predict with x0.
+output p0[0].
+let p1 be a list of decimal with value the result of asking net to predict with x1.
+output p1[0].
+let p2 be a list of decimal with value the result of asking net to predict with x2.
+output p2[0].
+let p3 be a list of decimal with value the result of asking net to predict with x3.
+output p3[0].

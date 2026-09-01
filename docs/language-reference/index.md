@@ -36,7 +36,7 @@ Packages add extra functions to your program. Use them with `use "packageName".`
 | `strings` | String utilities: `length`, `toUpperCase`, `contains` |
 | `math` | Math constants and functions: `pi`, `sqrt`, `abs`, `power` |
 | [`game`](game-package.md) | Terminal game helpers: `printBorder`, `printRow`, `centerText` |
-| [`neural`](neural-networks.md) | Neural networks: `initWeights`, `linearLayer`, `sigmoidActivation`, `mseError` |
+| [`neural`](neural-networks.md) | Neural networks: `NeuralNetwork` class with `predict` and `trainOnExample`, plus `initWeights`, `linearLayer`, `sigmoidActivation`, `mseError` |
 
 ## Calculators
 
