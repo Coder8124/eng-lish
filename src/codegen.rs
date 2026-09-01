@@ -8424,6 +8424,15 @@ impl<'ctx> CodeGen<'ctx> {
                         continue;
                     }
 
+                    // englang_append/englang_push store every element as a raw
+                    // 8-byte word, so non-int values need bitcasting to i64 to
+                    // match that signature.
+                    if (name == "append" || name == "push") && i == 1 {
+                        let coerced = self.value_to_slot(compiled_arg)?;
+                        args.push(coerced.into());
+                        continue;
+                    }
+
                     args.push(compiled_arg.into());
                 }
 
@@ -9304,6 +9313,19 @@ let more be a list of standard number with value the result of append with nums 
 output the result of arrayLength with more.
 output more[3]."),
             "3\n4\n40\n"
+        );
+    }
+
+    #[test]
+    fn append_is_generic_across_element_types() {
+        assert_eq!(
+            run("let nums be a list of decimal with value [1.0, 2.0].
+let more be a list of decimal with value the result of append with nums and 3.5.
+output more[2].
+let words be a list of text with value [\"hi\"].
+let words2 be a list of text with value the result of append with words and \"bye\".
+output words2[1]."),
+            "3.5\nbye\n"
         );
     }
 

@@ -876,6 +876,38 @@ impl SemanticAnalyzer {
                 }
             }
 
+            Expr::FunctionCall { name, arguments } if name == "append" || name == "push" => {
+                if arguments.len() != 2 {
+                    return Err(SemanticError::ArgumentCountMismatch(
+                        name.clone(),
+                        2,
+                        arguments.len(),
+                        self.current_line,
+                    ));
+                }
+                let list_type = self.analyze_expression(&arguments[0])?;
+                let elem_type = match list_type {
+                    Type::List(inner) => *inner,
+                    other => {
+                        return Err(SemanticError::TypeMismatch {
+                            expected: Type::List(Box::new(Type::Int)),
+                            found: other,
+                            line: self.current_line,
+                        });
+                    }
+                };
+                let value_type = self.analyze_expression(&arguments[1])?;
+                if value_type != elem_type && !(elem_type == Type::Float && value_type == Type::Int)
+                {
+                    return Err(SemanticError::TypeMismatch {
+                        expected: elem_type,
+                        found: value_type,
+                        line: self.current_line,
+                    });
+                }
+                Ok(Type::List(Box::new(elem_type)))
+            }
+
             Expr::FunctionCall { name, arguments } => {
                 let sig = self
                     .functions
