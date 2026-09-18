@@ -16,6 +16,7 @@ Looking for the exact rules instead? The [language specification](../spec/index.
 | Loops | `For each i from 0 to n,` and `While condition,` — repeat actions |
 | Classes | `Define a kind called Name:` — group data and behavior together |
 | [Lists](lists.md) | `[1, 2, 3]`, reading `scores[0]`, and changing items with `Set scores[0] to ...` |
+| [Watched decimals and gradients](gradients.md) | `let w be a watched decimal with value 0.5.`, `Find the gradients of loss.`, `the gradient of w` — how machines learn |
 | [Dictionaries](dictionaries.md) | `Let ages be a new dictionary.`, `Set ages["Alice"] to 12.`, `Remove "Alice" from ages.`, plus `hasKey` / `keysOf` / `sizeOf` |
 | Strings | `"text"` with escape sequences `\"`, `\n`, `\t`, `\\`; compare with `is equal to` |
 | File I/O | `readFile` / `writeFile` — read and write files |

@@ -29,6 +29,7 @@ mode           = "use" "beginner" "." ;
 type           = "text"
                | "standard number"
                | "decimal"
+               | "watched decimal"
                | "boolean"
                | "list" [ "of" type ]
                | dictionary-type
@@ -97,6 +98,7 @@ statement      = declaration
                | return
                | remove
                | plot
+               | gradients
                | expression-statement ;
 
 declaration    = "Let" identifier "be" [ article ] type
@@ -154,6 +156,10 @@ plot           = "plot" expression [ "against" expression ]
                  "to" text-literal "." ;
 
 chart-kind     = "line" | "bar" | "scatter" | "histogram" ;
+
+gradients      = "Find the" ( "gradients" | "gradient" ) "of" expression "."
+               | "show the graph of" expression "." ;
+                 (* the expression must be a watched decimal *)
 
 (* only when the sentence begins with an identifier *)
 expression-statement = expression "." ;

@@ -98,6 +98,7 @@ the-form = "the result of" identifier [ "with" arguments ]
 | `the result of f with x and y` | Calls `f` with two arguments |
 | `the result of asking obj to method` | Calls a method and uses its answer |
 | `the width of box` | Reads a property |
+| `the gradient of w` / `the value of w` | Reads a `decimal` out of the watched decimal `w` |
 
 Property access is deliberately shallow: both the property and the object **must** be plain names. `the name of the owner of car` does not parse. **There is no dot syntax anywhere in eng-lish** — `box.width` is not valid.
 

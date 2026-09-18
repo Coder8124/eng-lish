@@ -8,6 +8,7 @@ eng-lish is statically typed. Every variable has a type fixed when it is declare
 type = "text"
      | "standard number"
      | "decimal"
+     | "watched decimal"
      | "boolean"
      | "list" [ "of" type ]
      | dictionary-type
@@ -21,6 +22,7 @@ type = "text"
 | `text` | A string of characters | |
 | `standard number` | A whole number | 64-bit signed |
 | `decimal` | A number with a fractional part | 64-bit floating point |
+| `watched decimal` | A decimal that remembers how it was worked out, so its gradients can be found | See [4.12](04-statements.md#412-gradients). Cannot be an element of a list or dictionary, or a property of a class |
 | `boolean` | `true` or `false` | |
 | `list of T` | Many values of one type `T` | Plain `list` means `list of standard number` |
 | `dictionary` | Values looked up by a text key | Also written `lock and key list` |
@@ -58,6 +60,8 @@ An implementation **may** accept these for compatibility. Programs **must not** 
 Types **must** match exactly, with one convenience: where a `decimal` is expected, a `standard number` is accepted and widened automatically. This applies to arithmetic, to arguments of built-in maths functions, and to assignment.
 
 The reverse is not allowed. A `decimal` will not silently become a `standard number`, because that would lose the fractional part.
+
+A `watched decimal` accepts a `decimal` or `standard number` anywhere one is expected. Arithmetic with at least one watched operand produces a `watched decimal`. Storing such a result in a `decimal` or `standard number` variable is rejected; `the value of w` or `decimal of w` reads the plain number out.
 
 There is no truthiness. The condition of an `If` or a `While` **must** be a `boolean`; a number is not accepted in its place.
 
