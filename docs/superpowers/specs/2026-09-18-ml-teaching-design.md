@@ -2,11 +2,11 @@
 
 **Date:** 2026-09-18
 **Branch:** ml-education
-**Status:** Phase 0 implemented (`runtime/`, `build.rs`, `src/link.rs`); Phases 1–6 not started.
+**Status:** Phases 0 and 1 implemented (`runtime/`, `build.rs`, `src/link.rs`, `runtime/src/watched.rs`); Phases 2–6 not started.
 
 ## Goal
 
-Make eng-lish the best place to learn how machine learning actually works, from the theory to a running model. Students should be able to read an equation in a textbook and find the same steps, in the same order, in their eng-lish code. When they are ready, they should move to PyTorch already knowing its concepts.
+Make eng-lish the best place to learn how machine learning actually works, from the theory to a running model — deep enough to teach the real ideas, plain enough for a middle schooler. Students should be able to read an equation in a textbook and find the same steps, in the same order, in their eng-lish code. When they are ready, they should move to PyTorch already knowing its concepts.
 
 eng-lish competes with PyTorch **as a teaching tool**, not as a production framework.
 
@@ -67,7 +67,7 @@ A runtime error prints a plain-English message to stderr and exits with code 1. 
 
 ### Memory
 
-Lists stay as they are, allocated and never freed, for now. Tensors and autograd values are reference-counted inside the runtime from day one. Codegen will emit retain/release calls at scope exit and on reassignment. Autograd graphs keep their inputs alive through those references. Retrofitting reference counting onto lists is a separate, later project.
+Lists stay as they are, allocated and never freed, for now. Tensors and autograd values are reference-counted inside the runtime from day one. For watched decimals (Phase 1) the rules are: every value an expression creates is a temporary, released when its statement ends (or before a condition branches); storing into a variable retains the new value and releases the old one; variables live in entry-block slots that start empty, so a `let` inside a loop releases the previous pass's value; parameters are retained on entry, and every slot is released before a function returns, after the returned value has been retained for the caller. Autograd graphs keep their inputs alive through those references. 200,000 training steps run in 1.6 MB with `leaks` reporting nothing. Retrofitting reference counting onto lists is a separate, later project.
 
 ---
 
@@ -81,21 +81,24 @@ Each phase ships with docs in `docs/language-reference/`, runnable examples, and
 - Port `kMeans` from hand-written IR to Rust as the first built-in, fixing it into a real Lloyd's algorithm (assignment step plus centroid update, repeated until nothing changes or 100 rounds).
 - **Done when:** `examples/ml.eng` runs with correct clusters, all tests pass, and the playground still compiles programs.
 
-### Phase 1: Autograd on single numbers
+### Phase 1: Autograd on single numbers (implemented)
 
 The micrograd lesson. The student builds an expression, asks for gradients, and inspects them.
 
 ```
 let w be a watched decimal with value 0.5.
-let loss be a decimal with value (w * 3.0 - 6.0) * (w * 3.0 - 6.0).
+let loss be a watched decimal with value (w * 3.0 - 6.0) * (w * 3.0 - 6.0).
 Find the gradients of loss.
 output the gradient of w.
 show the graph of loss.
 ```
 
-- The runtime has a `Value` node with operation, children and gradient; its backward pass walks the nodes in topological order.
-- `show the graph of` writes an HTML diagram of the computation graph, reusing the `plot` output path.
-- **Done when:** a student can fit `y = w·x + b` by hand-written gradient descent on watched decimals.
+- `watched decimal` is a type (`Type::Watched`), an opaque pointer to a runtime `Value` node (operation, children, value, gradient, optional name). Arithmetic with any watched operand builds a node; `sigmoid`, `relu`, `tanh`, `exponential`, `logarithm` and `power` have watched versions.
+- `Find the gradients of` resets every gradient in the graph and walks it in reverse topological order. Gradients do **not** accumulate across calls, unlike PyTorch; there is no `zero_grad` for a beginner to forget. The PyTorch export (Phase 6) will emit `zero_grad()` to match.
+- `Subtract 0.1 * the gradient of w from w.` changes a declared watched decimal in place, so it stays the same leaf across training steps. On a derived value the same sentence builds a new node.
+- `show the graph of` prints the graph as an indented text tree rather than an HTML diagram: it works in the terminal and the playground with no extra tab, and a shared step is printed once and then marked "(shown above)".
+- Storing a watched result in a plain `decimal` is a compile error that tells the student to make it watched; asking for the gradient of a plain decimal explains that only watched decimals have one. Watched decimals can't go in lists, dictionaries or kinds yet; that needs element retain/release and waits for tensors.
+- **Done:** `examples/gradient_descent.eng` fits `y = 2x + 1` by hand-written gradient descent on watched decimals, and every runtime backward rule is checked against finite differences.
 
 ### Phase 2: Tensors
 
