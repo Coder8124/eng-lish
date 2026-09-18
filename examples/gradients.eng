@@ -1,0 +1,18 @@
+Note: A watched decimal remembers how it was worked out.
+Note: That lets eng-lish tell you how much each number matters.
+
+let width be a watched decimal with value 3.0.
+let height be a watched decimal with value 2.0.
+let area be a watched decimal with value width * height.
+
+Find the gradients of area.
+
+output "The area is:".
+output area.
+output "Make the width 1 bigger and the area grows by:".
+output the gradient of width.
+output "Make the height 1 bigger and the area grows by:".
+output the gradient of height.
+
+output "How the area was worked out:".
+show the graph of area.

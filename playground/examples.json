@@ -74,5 +74,15 @@
     "file": "ml.eng",
     "title": "Data science",
     "description": "Statistics and charts — check the Plots tab after running."
+  },
+  {
+    "file": "gradients.eng",
+    "title": "Gradients",
+    "description": "A watched decimal remembers how it was worked out, so eng-lish can say how much each number matters."
+  },
+  {
+    "file": "gradient_descent.eng",
+    "title": "Gradient descent",
+    "description": "Learn the rule behind some points by rolling downhill, one small step at a time."
   }
 ]
