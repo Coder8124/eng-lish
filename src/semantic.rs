@@ -64,6 +64,24 @@ pub enum SemanticError {
 
     #[error("Line {0}: 'skip' can only be used inside a loop (while or for each).")]
     ContinueOutsideLoop(usize),
+
+    #[error(
+        "Line {1}: '{0}' is worked out from a watched decimal, so it has to be a watched decimal too. Try `let {0} be a watched decimal with value ...`."
+    )]
+    NeedsWatched(String, usize),
+
+    #[error(
+        "Line {2}: Only watched decimals have {0}, but this is a {1}. Make it with `let ... be a watched decimal with value ...` so eng-lish can follow how it was worked out."
+    )]
+    NotWatched(String, Type, usize),
+
+    #[error(
+        "Line {1}: A watched decimal only has a 'value' and a 'gradient', not a '{0}'."
+    )]
+    NoWatchedProperty(String, usize),
+
+    #[error("Line {1}: Watched decimals can't go inside {0} yet. Use separate watched decimals instead.")]
+    WatchedNotAllowed(String, usize),
 }
 
 impl SemanticError {
@@ -112,6 +130,21 @@ impl SemanticError {
                 format!("Line {line}"),
                 "'skip' can only be used inside a loop.".to_string(),
                 "Move this line inside a `For each` or `While` block.".to_string(),
+            ),
+            SemanticError::NeedsWatched(name, line) => (
+                format!("Line {line}"),
+                format!("'{name}' is worked out from a watched decimal, so it has to be watched too."),
+                format!("Write `let {name} be a watched decimal with value ...`."),
+            ),
+            SemanticError::NotWatched(what, found, line) => (
+                format!("Line {line}"),
+                format!("Only watched decimals have {what}, but this is a {found}."),
+                "Make it with `let ... be a watched decimal with value ...`.".to_string(),
+            ),
+            SemanticError::NoWatchedProperty(property, line) => (
+                format!("Line {line}"),
+                format!("A watched decimal doesn't have a '{property}'."),
+                "Ask for `the value of ...` or `the gradient of ...`.".to_string(),
             ),
             other => {
                 let msg = format!("{other}");
@@ -303,6 +336,10 @@ impl SemanticAnalyzer {
                 self.current_line,
             ));
         }
+        for param in &func.parameters {
+            self.check_watched_placement(&param.param_type)?;
+        }
+        self.check_watched_placement(&func.return_type)?;
         if func
             .parameters
             .iter()
@@ -372,6 +409,13 @@ impl SemanticAnalyzer {
 
         // Add own properties (may override parent's)
         for prop in &class.properties {
+            if prop.prop_type == Type::Watched {
+                return Err(SemanticError::WatchedNotAllowed(
+                    "kinds".to_string(),
+                    self.current_line,
+                ));
+            }
+            self.check_watched_placement(&prop.prop_type)?;
             properties.insert(prop.name.clone(), prop.prop_type.clone());
         }
 
@@ -490,7 +534,9 @@ impl SemanticAnalyzer {
                 var_type,
                 value,
             } => {
+                self.check_watched_placement(var_type)?;
                 let value_type = self.analyze_expression(value)?;
+                self.check_not_losing_watch(name, var_type, &value_type)?;
                 self.check_type_compatible(var_type, &value_type)?;
                 self.declare_variable(name, var_type.clone())?;
             }
@@ -501,6 +547,7 @@ impl SemanticAnalyzer {
                 })?;
                 let expected_type = symbol.symbol_type.clone();
                 let value_type = self.analyze_expression(value)?;
+                self.check_not_losing_watch(name, &expected_type, &value_type)?;
                 self.check_type_compatible(&expected_type, &value_type)?;
             }
 
@@ -510,7 +557,8 @@ impl SemanticAnalyzer {
                 })?;
                 let var_type = symbol.symbol_type.clone();
                 let value_type = self.analyze_expression(value)?;
-                self.check_binary_op_types(op, &var_type, &value_type)?;
+                let result_type = self.check_binary_op_types(op, &var_type, &value_type)?;
+                self.check_not_losing_watch(name, &var_type, &result_type)?;
             }
 
             Statement::IndexAssignment {
@@ -720,6 +768,14 @@ impl SemanticAnalyzer {
                 self.check_type_compatible(&prop_type, &value_type)?;
             }
 
+            Statement::FindGradients(expr) => {
+                self.expect_watched(expr, "gradients")?;
+            }
+
+            Statement::ShowGraph(expr) => {
+                self.expect_watched(expr, "a graph")?;
+            }
+
             Statement::Plot {
                 data,
                 against,
@@ -784,7 +840,7 @@ impl SemanticAnalyzer {
                 let operand_type = self.analyze_expression(operand)?;
                 match op {
                     UnaryOp::Negate => {
-                        if operand_type == Type::Int || operand_type == Type::Float {
+                        if matches!(operand_type, Type::Int | Type::Float | Type::Watched) {
                             Ok(operand_type)
                         } else {
                             Err(SemanticError::TypeMismatch {
@@ -909,6 +965,31 @@ impl SemanticAnalyzer {
             }
 
             Expr::FunctionCall { name, arguments } => {
+                if let Some((_, arity)) = stdlib::watched_function(name)
+                    && let Some(first) = arguments.first()
+                    && self.analyze_expression(first)? == Type::Watched
+                {
+                    if arguments.len() != arity {
+                        return Err(SemanticError::ArgumentCountMismatch(
+                            name.clone(),
+                            arity,
+                            arguments.len(),
+                            self.current_line,
+                        ));
+                    }
+                    if let Some(exponent) = arguments.get(1) {
+                        let exponent_type = self.analyze_expression(exponent)?;
+                        if !matches!(exponent_type, Type::Int | Type::Float) {
+                            return Err(SemanticError::TypeMismatch {
+                                expected: Type::Float,
+                                found: exponent_type,
+                                line: self.current_line,
+                            });
+                        }
+                    }
+                    return Ok(Type::Watched);
+                }
+
                 let sig = self
                     .functions
                     .get(name)
@@ -1054,7 +1135,22 @@ impl SemanticAnalyzer {
 
             Expr::PropertyAccess { object, property } => {
                 let object_type = self.analyze_expression(object)?;
+                let asks_for_gradient = property == "gradient" || property == "value";
                 let class_name = match &object_type {
+                    Type::Watched if asks_for_gradient => return Ok(Type::Float),
+                    Type::Watched => {
+                        return Err(SemanticError::NoWatchedProperty(
+                            property.clone(),
+                            self.current_line,
+                        ));
+                    }
+                    Type::Int | Type::Float if property == "gradient" => {
+                        return Err(SemanticError::NotWatched(
+                            "a gradient".to_string(),
+                            object_type.clone(),
+                            self.current_line,
+                        ));
+                    }
                     Type::Class(name) => name.clone(),
                     other => {
                         return Err(SemanticError::TypeMismatch {
@@ -1094,6 +1190,21 @@ impl SemanticAnalyzer {
     ) -> Result<Type, SemanticError> {
         if *left == Type::Inferred || *right == Type::Inferred {
             return Ok(Type::Inferred);
+        }
+        let numeric = |t: &Type| matches!(t, Type::Int | Type::Float | Type::Watched);
+        if (*left == Type::Watched || *right == Type::Watched) && numeric(left) && numeric(right) {
+            match op {
+                BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
+                    return Ok(Type::Watched);
+                }
+                BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Greater
+                | BinaryOp::Less
+                | BinaryOp::GreaterEq
+                | BinaryOp::LessEq => return Ok(Type::Bool),
+                _ => {}
+            }
         }
         match op {
             BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
@@ -1161,7 +1272,11 @@ impl SemanticAnalyzer {
     }
 
     fn check_type_compatible(&self, expected: &Type, found: &Type) -> Result<(), SemanticError> {
-        if expected == found || *expected == Type::Inferred || *found == Type::Inferred {
+        if expected == found
+            || *expected == Type::Inferred
+            || *found == Type::Inferred
+            || (*expected == Type::Watched && matches!(found, Type::Int | Type::Float))
+        {
             Ok(())
         } else if let (Type::Dict(ek, ev), Type::Dict(fk, fv)) = (expected, found) {
             self.check_type_compatible(ek, fk)?;
@@ -1172,6 +1287,37 @@ impl SemanticAnalyzer {
                 found: found.clone(),
                 line: self.current_line,
             })
+        }
+    }
+
+    fn check_not_losing_watch(
+        &self,
+        name: &str,
+        target: &Type,
+        value: &Type,
+    ) -> Result<(), SemanticError> {
+        if *value == Type::Watched && matches!(target, Type::Int | Type::Float) {
+            Err(SemanticError::NeedsWatched(name.to_string(), self.current_line))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn check_watched_placement(&self, typ: &Type) -> Result<(), SemanticError> {
+        let place = match typ {
+            Type::List(inner) | Type::Set(inner) if **inner == Type::Watched => "lists",
+            Type::Dict(_, inner) if **inner == Type::Watched => "dictionaries",
+            _ => return Ok(()),
+        };
+        Err(SemanticError::WatchedNotAllowed(place.to_string(), self.current_line))
+    }
+
+    fn expect_watched(&mut self, expr: &Expr, what: &str) -> Result<(), SemanticError> {
+        let found = self.analyze_expression(expr)?;
+        if found == Type::Watched || found == Type::Inferred {
+            Ok(())
+        } else {
+            Err(SemanticError::NotWatched(what.to_string(), found, self.current_line))
         }
     }
 
@@ -1209,7 +1355,8 @@ impl SemanticAnalyzer {
     fn check_conversion(&self, from: &Type, to: &Type) -> Result<(), SemanticError> {
         let valid = matches!(
             (from, to),
-            (Type::Int, Type::Float)
+            (Type::Watched, Type::Float)
+                | (Type::Int, Type::Float)
                 | (Type::Int, Type::Text)
                 | (Type::Float, Type::Int)
                 | (Type::Float, Type::Text)
@@ -1281,5 +1428,49 @@ mod tests {
         let program = Parser::parse(src).unwrap();
         let mut analyzer = SemanticAnalyzer::new();
         assert!(analyzer.analyze(&program).is_err());
+    }
+
+    fn first_error(source: &str) -> SemanticError {
+        analyze(source).unwrap_err().remove(0)
+    }
+
+    #[test]
+    fn watched_decimals_mix_with_plain_numbers() {
+        let src = concat!(
+            "let w be a watched decimal with value 1.\n",
+            "let loss be a watched decimal with value (w * 3.0 - 6) * (w * 3.0 - 6).\n",
+            "Find the gradients of loss.\n",
+            "let slope be a decimal with value the gradient of w.\n",
+            "Subtract 0.1 * slope from w.\n",
+            "let squashed be a watched decimal with value the result of sigmoid with loss.\n",
+            "If loss is less than 1.0,\n    output the value of loss.\nEnd.\n"
+        );
+        assert!(analyze(src).is_ok());
+    }
+
+    #[test]
+    fn storing_a_watched_result_in_a_decimal_is_explained() {
+        let error = first_error(
+            "let w be a watched decimal with value 0.5.\nlet loss be a decimal with value w * 3.0.",
+        );
+        assert!(matches!(error, SemanticError::NeedsWatched(ref name, 2) if name == "loss"));
+    }
+
+    #[test]
+    fn plain_decimals_have_no_gradient() {
+        let error = first_error("let x be a decimal with value 0.5.\noutput the gradient of x.");
+        assert!(matches!(error, SemanticError::NotWatched(_, Type::Float, 2)));
+        let error = first_error("let x be a decimal with value 0.5.\nFind the gradients of x.");
+        assert!(matches!(error, SemanticError::NotWatched(_, Type::Float, 2)));
+    }
+
+    #[test]
+    fn watched_decimals_stay_out_of_lists_and_kinds() {
+        let error = first_error("let ws be a list of watched decimal with value [1.0].");
+        assert!(matches!(error, SemanticError::WatchedNotAllowed(_, 1)));
+        let error = first_error(
+            "Define a kind called Counter with the following:\n    Property weight is a watched decimal.\nEnd kind.",
+        );
+        assert!(matches!(error, SemanticError::WatchedNotAllowed(_, _)));
     }
 }

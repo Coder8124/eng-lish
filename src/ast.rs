@@ -13,6 +13,7 @@ pub enum Type {
     Set(Box<Type>),             // unique collection
     Void,                       // for functions that don't return
     Class(String),              // user-defined class type
+    Watched,                    // watched decimal: a decimal that remembers how it was made
     Inferred,                   // type to be inferred during semantic analysis
 }
 
@@ -87,6 +88,7 @@ impl std::fmt::Display for Type {
             Type::Set(inner) => write!(f, "unique collection of {}", inner),
             Type::Void => write!(f, "nothing"),
             Type::Class(name) => write!(f, "{}", name),
+            Type::Watched => write!(f, "watched decimal"),
             Type::Inferred => write!(f, "unknown"),
         }
     }
@@ -258,6 +260,12 @@ pub enum Statement {
         index: Expr,
         value: Expr,
     },
+
+    /// Find the gradients of loss.
+    FindGradients(Expr),
+
+    /// show the graph of loss.
+    ShowGraph(Expr),
 
     /// Plot statement: plot data as a line chart titled "Title" to "file.html".
     Plot {

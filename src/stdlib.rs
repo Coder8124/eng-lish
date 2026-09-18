@@ -583,3 +583,17 @@ pub fn get_ml_builtins() -> Vec<BuiltinFunction> {
         },
     ]
 }
+
+/// Built-ins that also work on a watched decimal, keeping track of the
+/// gradient: (runtime function, number of inputs).
+pub fn watched_function(name: &str) -> Option<(&'static str, usize)> {
+    match name {
+        "sigmoid" | "applySigmoid" => Some(("englang_watched_sigmoid", 1)),
+        "relu" | "applyRelu" => Some(("englang_watched_relu", 1)),
+        "tanh" => Some(("englang_watched_tanh", 1)),
+        "exponential" | "exp" => Some(("englang_watched_exponential", 1)),
+        "logarithm" | "log" => Some(("englang_watched_logarithm", 1)),
+        "power" | "pow" => Some(("englang_watched_power", 2)),
+        _ => None,
+    }
+}

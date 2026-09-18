@@ -44,6 +44,15 @@ pub struct CodeGen<'ctx> {
     loop_break_stack: Vec<BasicBlock<'ctx>>,
     /// Stack of continue targets (for nested loops)
     loop_continue_stack: Vec<BasicBlock<'ctx>>,
+    /// Parameter and return types of user functions, methods ("Kind.method")
+    /// and constructors ("Kind.create")
+    signatures: HashMap<String, (Vec<Type>, Type)>,
+    /// Return type of the function being compiled
+    current_return_type: Option<Type>,
+    /// Watched decimals made by the current statement, released when it ends
+    watched_temps: Vec<PointerValue<'ctx>>,
+    /// Variables in the current function holding a watched decimal
+    watched_slots: Vec<PointerValue<'ctx>>,
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -70,6 +79,10 @@ impl<'ctx> CodeGen<'ctx> {
             builtin_metadata: HashMap::new(),
             loop_break_stack: Vec::new(),
             loop_continue_stack: Vec::new(),
+            signatures: HashMap::new(),
+            current_return_type: None,
+            watched_temps: Vec::new(),
+            watched_slots: Vec::new(),
         }
     }
 
@@ -86,6 +99,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.declare_printf();
         self.declare_malloc();
         self.declare_builtin_functions()?;
+        self.declare_watched_runtime();
         self.build_dict_builtins()?;
 
         // First pass: declare class struct types
@@ -784,6 +798,260 @@ impl<'ctx> CodeGen<'ctx> {
         let i64_type = self.context.i64_type();
         let malloc_type = ptr_type.fn_type(&[i64_type.into()], false);
         self.malloc_fn = Some(self.module.add_function("malloc", malloc_type, None));
+    }
+
+    // ========== Watched decimals ==========
+    // Each watched decimal is a reference-counted node in the runtime. A value
+    // made while compiling a statement is a temporary, released when the
+    // statement ends; storing it in a variable keeps its own reference.
+
+    fn declare_watched_runtime(&mut self) {
+        let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
+        let f64_type = self.context.f64_type();
+        let i32_type = self.context.i32_type();
+        let void = self.context.void_type();
+        let declarations = [
+            ("englang_watched_new", ptr.fn_type(&[f64_type.into(), ptr.into()], false)),
+            ("englang_watched_constant", ptr.fn_type(&[f64_type.into()], false)),
+            ("englang_watched_name", void.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_watched_retain", void.fn_type(&[ptr.into()], false)),
+            ("englang_watched_release", void.fn_type(&[ptr.into()], false)),
+            ("englang_watched_value", f64_type.fn_type(&[ptr.into()], false)),
+            ("englang_watched_gradient", f64_type.fn_type(&[ptr.into()], false)),
+            ("englang_watched_add", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_watched_subtract", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_watched_multiply", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_watched_divide", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_watched_negate", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_watched_power", ptr.fn_type(&[ptr.into(), f64_type.into()], false)),
+            ("englang_watched_sigmoid", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_watched_relu", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_watched_tanh", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_watched_exponential", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_watched_logarithm", ptr.fn_type(&[ptr.into()], false)),
+            (
+                "englang_watched_update",
+                ptr.fn_type(&[ptr.into(), i32_type.into(), f64_type.into()], false),
+            ),
+            ("englang_watched_backward", void.fn_type(&[ptr.into()], false)),
+            ("englang_watched_show", void.fn_type(&[ptr.into()], false)),
+        ];
+        for (name, fn_type) in declarations {
+            self.module.add_function(name, fn_type, None);
+        }
+    }
+
+    fn call_runtime(
+        &self,
+        name: &str,
+        args: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
+    ) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+        let function = self
+            .module
+            .get_function(name)
+            .ok_or_else(|| format!("{} not declared", name))?;
+        let call = self
+            .builder
+            .build_call(function, args, "rt")
+            .map_err(|e| e.to_string())?;
+        Ok(match call.try_as_basic_value() {
+            ValueKind::Basic(value) => Some(value),
+            ValueKind::Instruction(_) => None,
+        })
+    }
+
+    fn new_watched(
+        &mut self,
+        name: &str,
+        args: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
+    ) -> Result<PointerValue<'ctx>, String> {
+        let handle = self
+            .call_runtime(name, args)?
+            .ok_or("watched runtime call returned nothing")?
+            .into_pointer_value();
+        self.watched_temps.push(handle);
+        Ok(handle)
+    }
+
+    fn release_temps(&mut self, mark: usize) -> Result<(), String> {
+        for handle in self.watched_temps.split_off(mark) {
+            self.call_runtime("englang_watched_release", &[handle.into()])?;
+        }
+        Ok(())
+    }
+
+    fn release_slots(&mut self) -> Result<(), String> {
+        let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
+        for slot in self.watched_slots.clone() {
+            let handle = self
+                .builder
+                .build_load(ptr, slot, "watched_old")
+                .map_err(|e| e.to_string())?;
+            self.call_runtime("englang_watched_release", &[handle.into()])?;
+        }
+        Ok(())
+    }
+
+    // Slots live in the entry block and start empty, so a slot that is filled
+    // inside a loop can release what the previous pass stored there.
+    fn watched_slot(&mut self, name: &str) -> Result<PointerValue<'ctx>, String> {
+        let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
+        let entry = self
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent())
+            .and_then(|f| f.get_first_basic_block())
+            .ok_or("no function to hold a watched decimal")?;
+        let entry_builder = self.context.create_builder();
+        match entry.get_first_instruction() {
+            Some(first) => entry_builder.position_before(&first),
+            None => entry_builder.position_at_end(entry),
+        }
+        let slot = entry_builder
+            .build_alloca(ptr, name)
+            .map_err(|e| e.to_string())?;
+        entry_builder
+            .build_store(slot, ptr.const_null())
+            .map_err(|e| e.to_string())?;
+        self.watched_slots.push(slot);
+        Ok(slot)
+    }
+
+    fn store_watched(
+        &mut self,
+        slot: PointerValue<'ctx>,
+        handle: PointerValue<'ctx>,
+    ) -> Result<(), String> {
+        let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
+        self.call_runtime("englang_watched_retain", &[handle.into()])?;
+        let old = self
+            .builder
+            .build_load(ptr, slot, "watched_old")
+            .map_err(|e| e.to_string())?;
+        self.call_runtime("englang_watched_release", &[old.into()])?;
+        self.builder
+            .build_store(slot, handle)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn compile_number(&mut self, expr: &Expr) -> Result<inkwell::values::FloatValue<'ctx>, String> {
+        let value = self.compile_expression(expr)?;
+        match value {
+            BasicValueEnum::FloatValue(v) => Ok(v),
+            BasicValueEnum::IntValue(v) => self
+                .builder
+                .build_signed_int_to_float(v, self.context.f64_type(), "itof")
+                .map_err(|e| e.to_string()),
+            BasicValueEnum::PointerValue(p) => Ok(self
+                .call_runtime("englang_watched_value", &[p.into()])?
+                .ok_or("englang_watched_value returned nothing")?
+                .into_float_value()),
+            _ => Err("Expected a number".to_string()),
+        }
+    }
+
+    fn compile_watched(&mut self, expr: &Expr) -> Result<PointerValue<'ctx>, String> {
+        if self.infer_type(expr) == Type::Watched {
+            return Ok(self.compile_expression(expr)?.into_pointer_value());
+        }
+        let number = self.compile_number(expr)?;
+        self.new_watched("englang_watched_constant", &[number.into()])
+    }
+
+    /// A watched decimal stored under `name`: plain numbers become a new
+    /// watched decimal with that name, and unnamed results take the name.
+    fn compile_named_watched(
+        &mut self,
+        expr: &Expr,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let label = self
+            .builder
+            .build_global_string_ptr(name, "watched_label")
+            .map_err(|e| e.to_string())?
+            .as_pointer_value();
+        if self.infer_type(expr) == Type::Watched {
+            let handle = self.compile_expression(expr)?.into_pointer_value();
+            self.call_runtime("englang_watched_name", &[handle.into(), label.into()])?;
+            return Ok(handle);
+        }
+        let number = self.compile_number(expr)?;
+        self.new_watched("englang_watched_new", &[number.into(), label.into()])
+    }
+
+    fn compile_watched_binary(
+        &mut self,
+        op: &BinaryOp,
+        left: &Expr,
+        right: &Expr,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let runtime_name = match op {
+            BinaryOp::Add => "englang_watched_add",
+            BinaryOp::Subtract => "englang_watched_subtract",
+            BinaryOp::Multiply => "englang_watched_multiply",
+            BinaryOp::Divide => "englang_watched_divide",
+            _ => {
+                let l = self.compile_number(left)?;
+                let r = self.compile_number(right)?;
+                return self.compile_binary_op(op, l.into(), r.into(), &Type::Bool);
+            }
+        };
+        let l = self.compile_watched(left)?;
+        let r = self.compile_watched(right)?;
+        Ok(self.new_watched(runtime_name, &[l.into(), r.into()])?.into())
+    }
+
+    fn compile_args(
+        &mut self,
+        arguments: &[Expr],
+        param_types: &[Type],
+        args: &mut Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>,
+    ) -> Result<(), String> {
+        for (i, arg) in arguments.iter().enumerate() {
+            if param_types.get(i) == Some(&Type::Watched) {
+                args.push(self.compile_watched(arg)?.into());
+            } else {
+                args.push(self.compile_expression(arg)?.into());
+            }
+        }
+        Ok(())
+    }
+
+    fn bind_param(
+        &mut self,
+        name: &str,
+        param_type: &Type,
+        value: BasicValueEnum<'ctx>,
+    ) -> Result<(), String> {
+        let slot = if *param_type == Type::Watched {
+            let slot = self.watched_slot(name)?;
+            self.store_watched(slot, value.into_pointer_value())?;
+            slot
+        } else {
+            let alloca = self
+                .builder
+                .build_alloca(self.get_llvm_type(param_type), name)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(alloca, value)
+                .map_err(|e| e.to_string())?;
+            alloca
+        };
+        self.variables
+            .insert(name.to_string(), (slot, param_type.clone()));
+        Ok(())
+    }
+
+    fn return_watched_result(
+        &mut self,
+        key: &str,
+        value: BasicValueEnum<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        if self.signatures.get(key).map(|(_, ret)| ret) == Some(&Type::Watched) {
+            self.watched_temps.push(value.into_pointer_value());
+        }
+        value
     }
 
     // ========== Builtin Standard Library ==========
@@ -6929,6 +7197,13 @@ impl<'ctx> CodeGen<'ctx> {
 
         let fn_value = self.module.add_function(&func.name, fn_type, None);
         self.functions.insert(func.name.clone(), fn_value);
+        self.signatures.insert(
+            func.name.clone(),
+            (
+                func.parameters.iter().map(|p| p.param_type.clone()).collect(),
+                func.return_type.clone(),
+            ),
+        );
         Ok(())
     }
 
@@ -6943,19 +7218,13 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Save and clear current variables scope
         let saved_vars = std::mem::take(&mut self.variables);
+        let saved_slots = std::mem::take(&mut self.watched_slots);
+        let saved_return = self.current_return_type.replace(func.return_type.clone());
 
         // Bind parameters to allocas
         for (i, param) in func.parameters.iter().enumerate() {
             let param_val = fn_value.get_nth_param(i as u32).unwrap();
-            let alloca = self
-                .builder
-                .build_alloca(self.get_llvm_type(&param.param_type), &param.name)
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(alloca, param_val)
-                .map_err(|e| e.to_string())?;
-            self.variables
-                .insert(param.name.clone(), (alloca, param.param_type.clone()));
+            self.bind_param(&param.name, &param.param_type, param_val)?;
         }
 
         // Compile body
@@ -6973,12 +7242,15 @@ impl<'ctx> CodeGen<'ctx> {
                 .get_terminator()
                 .is_none()
             {
+                self.release_slots()?;
                 self.builder.build_return(None).map_err(|e| e.to_string())?;
             }
         }
 
         // Restore variables
         self.variables = saved_vars;
+        self.watched_slots = saved_slots;
+        self.current_return_type = saved_return;
         Ok(())
     }
 
@@ -7034,6 +7306,13 @@ impl<'ctx> CodeGen<'ctx> {
             && let Some(parent_methods) = self.class_methods.get(parent_name)
         {
             methods_map.extend(parent_methods.clone());
+            for method_name in parent_methods.keys() {
+                if let Some(sig) = self.signatures.get(&format!("{}.{}", parent_name, method_name)) {
+                    let sig = sig.clone();
+                    self.signatures
+                        .insert(format!("{}.{}", class.name, method_name), sig);
+                }
+            }
         }
 
         // Declare constructor
@@ -7047,6 +7326,13 @@ impl<'ctx> CodeGen<'ctx> {
             let ctor_name = format!("{}_create", class.name);
             let ctor_fn = self.module.add_function(&ctor_name, ctor_type, None);
             self.class_constructors.insert(class.name.clone(), ctor_fn);
+            self.signatures.insert(
+                format!("{}.create", class.name),
+                (
+                    constructor.parameters.iter().map(|p| p.param_type.clone()).collect(),
+                    Type::Void,
+                ),
+            );
         }
 
         // Declare methods
@@ -7067,6 +7353,13 @@ impl<'ctx> CodeGen<'ctx> {
             let method_name = format!("{}_{}", class.name, method.name);
             let method_fn = self.module.add_function(&method_name, fn_type, None);
             methods_map.insert(method.name.clone(), method_fn);
+            self.signatures.insert(
+                format!("{}.{}", class.name, method.name),
+                (
+                    method.parameters.iter().map(|p| p.param_type.clone()).collect(),
+                    method.return_type.clone(),
+                ),
+            );
         }
 
         self.class_methods.insert(class.name.clone(), methods_map);
@@ -7086,6 +7379,8 @@ impl<'ctx> CodeGen<'ctx> {
             let saved_vars = std::mem::take(&mut self.variables);
             let saved_self = self.current_self.take();
             let saved_class = self.current_class_name.take();
+            let saved_slots = std::mem::take(&mut self.watched_slots);
+            let saved_return = self.current_return_type.replace(Type::Void);
 
             let self_ptr = ctor_fn.get_nth_param(0).unwrap().into_pointer_value();
             self.current_self = Some(self_ptr);
@@ -7104,26 +7399,23 @@ impl<'ctx> CodeGen<'ctx> {
             // Bind constructor parameters
             for (i, param) in constructor.parameters.iter().enumerate() {
                 let param_val = ctor_fn.get_nth_param((i + 1) as u32).unwrap();
-                let alloca = self
-                    .builder
-                    .build_alloca(self.get_llvm_type(&param.param_type), &param.name)
-                    .map_err(|e| e.to_string())?;
-                self.builder
-                    .build_store(alloca, param_val)
-                    .map_err(|e| e.to_string())?;
-                self.variables
-                    .insert(param.name.clone(), (alloca, param.param_type.clone()));
+                self.bind_param(&param.name, &param.param_type, param_val)?;
             }
 
             for stmt in &constructor.body {
                 self.compile_statement(stmt)?;
             }
 
-            self.builder.build_return(None).map_err(|e| e.to_string())?;
+            if !self.current_block_has_terminator() {
+                self.release_slots()?;
+                self.builder.build_return(None).map_err(|e| e.to_string())?;
+            }
 
             self.variables = saved_vars;
             self.current_self = saved_self;
             self.current_class_name = saved_class;
+            self.watched_slots = saved_slots;
+            self.current_return_type = saved_return;
         }
 
         // Compile methods
@@ -7141,6 +7433,8 @@ impl<'ctx> CodeGen<'ctx> {
             let saved_vars = std::mem::take(&mut self.variables);
             let saved_self = self.current_self.take();
             let saved_class = self.current_class_name.take();
+            let saved_slots = std::mem::take(&mut self.watched_slots);
+            let saved_return = self.current_return_type.replace(method.return_type.clone());
 
             let self_ptr = method_fn.get_nth_param(0).unwrap().into_pointer_value();
             self.current_self = Some(self_ptr);
@@ -7159,15 +7453,7 @@ impl<'ctx> CodeGen<'ctx> {
             // Bind method parameters
             for (i, param) in method.parameters.iter().enumerate() {
                 let param_val = method_fn.get_nth_param((i + 1) as u32).unwrap();
-                let alloca = self
-                    .builder
-                    .build_alloca(self.get_llvm_type(&param.param_type), &param.name)
-                    .map_err(|e| e.to_string())?;
-                self.builder
-                    .build_store(alloca, param_val)
-                    .map_err(|e| e.to_string())?;
-                self.variables
-                    .insert(param.name.clone(), (alloca, param.param_type.clone()));
+                self.bind_param(&param.name, &param.param_type, param_val)?;
             }
 
             for stmt in &method.body {
@@ -7183,12 +7469,15 @@ impl<'ctx> CodeGen<'ctx> {
                     .get_terminator()
                     .is_none()
             {
+                self.release_slots()?;
                 self.builder.build_return(None).map_err(|e| e.to_string())?;
             }
 
             self.variables = saved_vars;
             self.current_self = saved_self;
             self.current_class_name = saved_class;
+            self.watched_slots = saved_slots;
+            self.current_return_type = saved_return;
         }
 
         Ok(())
@@ -7214,7 +7503,83 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     fn compile_statement(&mut self, stmt: &Statement) -> Result<(), String> {
+        let mark = self.watched_temps.len();
+        self.compile_statement_inner(stmt)?;
+        if self.current_block_has_terminator() {
+            self.watched_temps.truncate(mark);
+            Ok(())
+        } else {
+            self.release_temps(mark)
+        }
+    }
+
+    fn compile_statement_inner(&mut self, stmt: &Statement) -> Result<(), String> {
         match stmt {
+            Statement::VariableDecl {
+                name,
+                var_type: Type::Watched,
+                value,
+            } => {
+                let slot = self.watched_slot(name)?;
+                let handle = self.compile_named_watched(value, name)?;
+                self.store_watched(slot, handle)?;
+                self.variables.insert(name.clone(), (slot, Type::Watched));
+            }
+
+            Statement::Assignment { name, value }
+                if self.variables.get(name).map(|(_, t)| t) == Some(&Type::Watched) =>
+            {
+                let slot = self.variables[name].0;
+                let handle = self.compile_named_watched(value, name)?;
+                self.store_watched(slot, handle)?;
+            }
+
+            Statement::CompoundAssignment { name, op, value }
+                if self.variables.get(name).map(|(_, t)| t) == Some(&Type::Watched) =>
+            {
+                let slot = self.variables[name].0;
+                let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
+                let current = self
+                    .builder
+                    .build_load(ptr, slot, name)
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value();
+                let updated = if self.infer_type(value) == Type::Watched {
+                    let current_expr = Expr::Identifier(name.clone());
+                    self.compile_watched_binary(op, &current_expr, value)?
+                        .into_pointer_value()
+                } else {
+                    let amount = self.compile_number(value)?;
+                    let code = match op {
+                        BinaryOp::Add => 0,
+                        BinaryOp::Subtract => 1,
+                        BinaryOp::Multiply => 2,
+                        _ => 3,
+                    };
+                    let code = self.context.i32_type().const_int(code, false);
+                    self.new_watched(
+                        "englang_watched_update",
+                        &[current.into(), code.into(), amount.into()],
+                    )?
+                };
+                self.store_watched(slot, updated)?;
+            }
+
+            Statement::Output(expr) if self.infer_type(expr) == Type::Watched => {
+                let number = self.compile_number(expr)?;
+                self.emit_print(number.into(), expr)?;
+            }
+
+            Statement::FindGradients(expr) => {
+                let handle = self.compile_watched(expr)?;
+                self.call_runtime("englang_watched_backward", &[handle.into()])?;
+            }
+
+            Statement::ShowGraph(expr) => {
+                let handle = self.compile_watched(expr)?;
+                self.call_runtime("englang_watched_show", &[handle.into()])?;
+            }
+
             Statement::VariableDecl {
                 name,
                 var_type,
@@ -7266,11 +7631,13 @@ impl<'ctx> CodeGen<'ctx> {
                 else_ifs,
                 else_block,
             } => {
+                let mark = self.watched_temps.len();
                 let cond_value = self.compile_expression(condition)?;
                 let cond_bool = match cond_value {
                     BasicValueEnum::IntValue(v) => v,
                     _ => return Err("Condition must be boolean".to_string()),
                 };
+                self.release_temps(mark)?;
 
                 let function = self
                     .builder
@@ -7309,11 +7676,13 @@ impl<'ctx> CodeGen<'ctx> {
                 for (i, (elif_cond, elif_block)) in else_ifs.iter().enumerate() {
                     self.builder.position_at_end(next_bb);
 
+                    let mark = self.watched_temps.len();
                     let elif_cond_value = self.compile_expression(elif_cond)?;
                     let elif_cond_bool = match elif_cond_value {
                         BasicValueEnum::IntValue(v) => v,
                         _ => return Err("Condition must be boolean".to_string()),
                     };
+                    self.release_temps(mark)?;
 
                     let elif_then_bb = self.context.append_basic_block(function, "elif_then");
                     next_bb = if i + 1 < else_ifs.len() || else_block.is_some() {
@@ -7374,11 +7743,13 @@ impl<'ctx> CodeGen<'ctx> {
                     .map_err(|e| e.to_string())?;
 
                 self.builder.position_at_end(cond_bb);
+                let mark = self.watched_temps.len();
                 let cond_value = self.compile_expression(condition)?;
                 let cond_bool = match cond_value {
                     BasicValueEnum::IntValue(v) => v,
                     _ => return Err("Condition must be boolean".to_string()),
                 };
+                self.release_temps(mark)?;
                 self.builder
                     .build_conditional_branch(cond_bool, body_bb, after_bb)
                     .map_err(|e| e.to_string())?;
@@ -7414,8 +7785,10 @@ impl<'ctx> CodeGen<'ctx> {
                     .unwrap();
 
                 // Compile start and end values
+                let mark = self.watched_temps.len();
                 let start_val = self.compile_expression(start)?;
                 let end_val = self.compile_expression(end)?;
+                self.release_temps(mark)?;
 
                 let start_int = match start_val {
                     BasicValueEnum::IntValue(v) => v,
@@ -7621,14 +7994,23 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             Statement::Return(expr) => {
-                if let Some(return_expr) = expr {
-                    let val = self.compile_expression(return_expr)?;
-                    self.builder
-                        .build_return(Some(&val))
-                        .map_err(|e| e.to_string())?;
-                } else {
-                    self.builder.build_return(None).map_err(|e| e.to_string())?;
+                let mark = self.watched_temps.len();
+                let val = match expr {
+                    Some(return_expr) if self.current_return_type == Some(Type::Watched) => {
+                        let handle = self.compile_watched(return_expr)?;
+                        self.call_runtime("englang_watched_retain", &[handle.into()])?;
+                        Some(BasicValueEnum::from(handle))
+                    }
+                    Some(return_expr) => Some(self.compile_expression(return_expr)?),
+                    None => None,
+                };
+                self.release_temps(mark)?;
+                self.release_slots()?;
+                match val {
+                    Some(val) => self.builder.build_return(Some(&val)),
+                    None => self.builder.build_return(None),
                 }
+                .map_err(|e| e.to_string())?;
             }
 
             Statement::PropertyAssignment {
@@ -7809,6 +8191,58 @@ impl<'ctx> CodeGen<'ctx> {
                     .builder
                     .build_load(llvm_type, ptr, name)
                     .map_err(|e| e.to_string())?)
+            }
+
+            Expr::BinaryOp { op, left, right }
+                if self.infer_type(left) == Type::Watched
+                    || self.infer_type(right) == Type::Watched =>
+            {
+                self.compile_watched_binary(op, left, right)
+            }
+
+            Expr::TypeConversion { target_type: Type::Float, expr }
+                if self.infer_type(expr) == Type::Watched =>
+            {
+                Ok(self.compile_number(expr)?.into())
+            }
+
+            Expr::UnaryOp {
+                op: UnaryOp::Negate,
+                operand,
+            } if self.infer_type(operand) == Type::Watched => {
+                let handle = self.compile_watched(operand)?;
+                Ok(self
+                    .new_watched("englang_watched_negate", &[handle.into()])?
+                    .into())
+            }
+
+            Expr::FunctionCall { name, arguments }
+                if stdlib::watched_function(name).is_some()
+                    && arguments
+                        .first()
+                        .is_some_and(|arg| self.infer_type(arg) == Type::Watched) =>
+            {
+                let (runtime_name, _) = stdlib::watched_function(name).unwrap();
+                let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                    vec![self.compile_watched(&arguments[0])?.into()];
+                if let Some(exponent) = arguments.get(1) {
+                    args.push(self.compile_number(exponent)?.into());
+                }
+                Ok(self.new_watched(runtime_name, &args)?.into())
+            }
+
+            Expr::PropertyAccess { object, property }
+                if self.infer_type(object) == Type::Watched =>
+            {
+                let handle = self.compile_expression(object)?;
+                let runtime_name = if property == "gradient" {
+                    "englang_watched_gradient"
+                } else {
+                    "englang_watched_value"
+                };
+                Ok(self
+                    .call_runtime(runtime_name, &[handle.into()])?
+                    .ok_or("watched runtime call returned nothing")?)
             }
 
             Expr::BinaryOp { op, left, right } => {
@@ -8040,9 +8474,18 @@ impl<'ctx> CodeGen<'ctx> {
                 };
 
                 let builtin_meta = self.builtin_metadata.get(name).cloned();
+                let param_types = self
+                    .signatures
+                    .get(name)
+                    .map(|(params, _)| params.clone())
+                    .unwrap_or_default();
 
                 let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = Vec::new();
                 for (i, arg) in arguments.iter().enumerate() {
+                    if param_types.get(i) == Some(&Type::Watched) {
+                        args.push(self.compile_watched(arg)?.into());
+                        continue;
+                    }
                     let compiled_arg = self.compile_expression(arg)?;
 
                     // Auto-promote Int to Float for builtin math functions
@@ -8078,7 +8521,7 @@ impl<'ctx> CodeGen<'ctx> {
 
                 // If the function returns void, return a dummy value
                 match call.try_as_basic_value() {
-                    ValueKind::Basic(val) => Ok(val),
+                    ValueKind::Basic(val) => Ok(self.return_watched_result(name, val)),
                     ValueKind::Instruction(_) => {
                         // Void return - return a dummy i64 0
                         Ok(self.context.i64_type().const_int(0, false).into())
@@ -8114,9 +8557,12 @@ impl<'ctx> CodeGen<'ctx> {
                 if let Some(ctor_fn) = self.class_constructors.get(class_name).copied() {
                     let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
                         vec![heap_ptr.into()];
-                    for arg in arguments {
-                        args.push(self.compile_expression(arg)?.into());
-                    }
+                    let param_types = self
+                        .signatures
+                        .get(&format!("{}.create", class_name))
+                        .map(|(params, _)| params.clone())
+                        .unwrap_or_default();
+                    self.compile_args(arguments, &param_types, &mut args)?;
                     self.builder
                         .build_call(ctor_fn, &args, "ctor_call")
                         .map_err(|e| e.to_string())?;
@@ -8145,11 +8591,15 @@ impl<'ctx> CodeGen<'ctx> {
                     .and_then(|m| m.get(method))
                     .ok_or_else(|| format!("No method {} on {}", method, class_name))?;
 
+                let key = format!("{}.{}", class_name, method);
+                let param_types = self
+                    .signatures
+                    .get(&key)
+                    .map(|(params, _)| params.clone())
+                    .unwrap_or_default();
                 let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
                     vec![obj_ptr.into()];
-                for arg in arguments {
-                    args.push(self.compile_expression(arg)?.into());
-                }
+                self.compile_args(arguments, &param_types, &mut args)?;
 
                 let call = self
                     .builder
@@ -8157,7 +8607,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .map_err(|e| e.to_string())?;
 
                 match call.try_as_basic_value() {
-                    ValueKind::Basic(val) => Ok(val),
+                    ValueKind::Basic(val) => Ok(self.return_watched_result(&key, val)),
                     ValueKind::Instruction(_) => {
                         Ok(self.context.i64_type().const_int(0, false).into())
                     }
@@ -8475,6 +8925,10 @@ impl<'ctx> CodeGen<'ctx> {
                 .context
                 .ptr_type(inkwell::AddressSpace::default())
                 .into(),
+            Type::Watched => self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into(),
             Type::Void => self.context.i64_type().into(), // shouldn't be used as value type
             Type::Inferred => unreachable!("Type::Inferred should be resolved before codegen"),
         }
@@ -8491,6 +8945,47 @@ impl<'ctx> CodeGen<'ctx> {
                 .get(name)
                 .map(|(_, t)| t.clone())
                 .unwrap_or(Type::Int),
+            Expr::BinaryOp { op, left, right }
+                if self.infer_type(left) == Type::Watched
+                    || self.infer_type(right) == Type::Watched =>
+            {
+                match op {
+                    BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
+                        Type::Watched
+                    }
+                    _ => Type::Bool,
+                }
+            }
+            Expr::UnaryOp {
+                op: UnaryOp::Negate,
+                operand,
+            } if self.infer_type(operand) == Type::Watched => Type::Watched,
+            Expr::FunctionCall { name, arguments }
+                if stdlib::watched_function(name).is_some()
+                    && arguments
+                        .first()
+                        .is_some_and(|arg| self.infer_type(arg) == Type::Watched) =>
+            {
+                Type::Watched
+            }
+            Expr::FunctionCall { name, .. }
+                if self.signatures.get(name).map(|(_, ret)| ret) == Some(&Type::Watched) =>
+            {
+                Type::Watched
+            }
+            Expr::MethodCall { object, method, .. }
+                if self
+                    .infer_class_name(object)
+                    .ok()
+                    .and_then(|class| self.signatures.get(&format!("{}.{}", class, method)))
+                    .map(|(_, ret)| ret)
+                    == Some(&Type::Watched) =>
+            {
+                Type::Watched
+            }
+            Expr::PropertyAccess { object, .. } if self.infer_type(object) == Type::Watched => {
+                Type::Float
+            }
             Expr::BinaryOp { left, right, .. } => {
                 let left_type = self.infer_type(left);
                 let right_type = self.infer_type(right);
@@ -9006,6 +9501,66 @@ For each i from 0 to 5,
     output groups[i].
 End."),
             "0\n0\n0\n1\n1\n1\n"
+        );
+    }
+
+    #[test]
+    fn gradients_follow_the_chain_rule() {
+        assert_eq!(
+            run("let w be a watched decimal with value 0.5.
+let loss be a watched decimal with value (w * 3.0 - 6.0) * (w * 3.0 - 6.0).
+Find the gradients of loss.
+output loss.
+output the gradient of w.
+let squashed be a watched decimal with value the result of sigmoid with (w - 0.5).
+Find the gradients of squashed.
+output the gradient of w.
+let cubed be a watched decimal with value the result of power with w and 3.
+Find the gradients of cubed.
+output the gradient of w."),
+            "20.25\n-27.0\n0.25\n0.75\n"
+        );
+    }
+
+    #[test]
+    fn gradient_descent_fits_a_line() {
+        assert_eq!(
+            run("To squaredMiss with a watched decimal guess and a decimal target returning a watched decimal:
+    let miss be a watched decimal with value guess - target.
+    Give back miss * miss.
+End.
+let xs be a list of decimal with value [1.0, 2.0, 3.0].
+let ys be a list of decimal with value [3.0, 5.0, 7.0].
+let weight be a watched decimal with value 0.0.
+let bias be a watched decimal with value 0.0.
+For each step from 1 to 2000,
+    let loss be a watched decimal with value 0.0.
+    For each i from 0 to 2,
+        Add the result of squaredMiss with weight * xs[i] + bias and ys[i] to loss.
+    End.
+    Find the gradients of loss.
+    Subtract 0.02 * the gradient of weight from weight.
+    Subtract 0.02 * the gradient of bias from bias.
+End.
+output standard number of (the value of weight * 100.0 + 0.5).
+output standard number of (the value of bias * 100.0 + 0.5)."),
+            "200\n100\n"
+        );
+    }
+
+    #[test]
+    fn show_the_graph_prints_each_step() {
+        assert_eq!(
+            run("let w be a watched decimal with value 2.0.
+let area be a watched decimal with value w * w + 1.0.
+Find the gradients of area.
+show the graph of area."),
+            "area = 5.0  (plus)   gradient 1.0
+├── times = 4.0   gradient 1.0
+│   ├── w = 2.0   gradient 4.0
+│   └── w = 2.0   gradient 4.0
+└── 1.0
+"
         );
     }
 }
