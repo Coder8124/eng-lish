@@ -1,6 +1,7 @@
 mod ast;
 mod codegen;
 mod lexer;
+mod link;
 mod parser;
 mod semantic;
 mod stdlib;
@@ -262,9 +263,7 @@ fn main() {
     }
 
     // Link with clang
-    let status = Command::new("clang")
-        .args([&obj_path, "-o", &exe_path, "-lm"])
-        .status();
+    let status = link::link(Path::new(&obj_path), Path::new(&exe_path));
 
     match status {
         Ok(s) if s.success() => {
