@@ -211,6 +211,9 @@ pub struct SemanticAnalyzer {
     inferred_param_types: HashMap<String, Vec<Option<Type>>>,
     /// Inferred return type per beginner function
     inferred_return_types: HashMap<String, Option<Type>>,
+    /// Functions the program defines itself, which win over built-in
+    /// watched decimal and tensor versions of the same name
+    user_functions: HashSet<String>,
 }
 
 impl SemanticAnalyzer {
@@ -229,6 +232,7 @@ impl SemanticAnalyzer {
             beginner_functions: HashSet::new(),
             inferred_param_types: HashMap::new(),
             inferred_return_types: HashMap::new(),
+            user_functions: HashSet::new(),
         };
         analyzer.register_builtin_functions();
         analyzer
@@ -341,6 +345,7 @@ impl SemanticAnalyzer {
                 self.current_line,
             ));
         }
+        self.user_functions.insert(func.name.clone());
         for param in &func.parameters {
             self.check_watched_placement(&param.param_type)?;
         }
@@ -993,6 +998,7 @@ impl SemanticAnalyzer {
 
             Expr::FunctionCall { name, arguments } => {
                 if let Some((_, arity)) = stdlib::watched_function(name)
+                    && !self.user_functions.contains(name)
                     && let Some(first) = arguments.first()
                     && self.analyze_expression(first)? == Type::Watched
                 {
@@ -1349,8 +1355,11 @@ impl SemanticAnalyzer {
         let Some((_, tensor_only)) = stdlib::tensor_function(name) else {
             return Ok(false);
         };
+        if self.user_functions.contains(name) {
+            return Ok(false);
+        }
         if tensor_only {
-            return Ok(!self.functions.contains_key(name));
+            return Ok(true);
         }
         match arguments.first() {
             Some(first) => Ok(self.analyze_expression(first)? == Type::Tensor),

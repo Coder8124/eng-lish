@@ -1157,8 +1157,10 @@ impl<'ctx> CodeGen<'ctx> {
 
     fn tensor_call(&self, name: &str, arguments: &[Expr]) -> Option<stdlib::TensorCall> {
         let (call, tensor_only) = stdlib::tensor_function(name)?;
-        let applies = if tensor_only {
-            !self.functions.contains_key(name)
+        let applies = if self.functions.contains_key(name) {
+            false
+        } else if tensor_only {
+            true
         } else {
             arguments
                 .first()
@@ -8528,6 +8530,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             Expr::FunctionCall { name, arguments }
                 if stdlib::watched_function(name).is_some()
+                    && !self.functions.contains_key(name)
                     && arguments
                         .first()
                         .is_some_and(|arg| self.infer_type(arg) == Type::Watched) =>
@@ -9298,6 +9301,7 @@ impl<'ctx> CodeGen<'ctx> {
             } if self.infer_type(operand) == Type::Watched => Type::Watched,
             Expr::FunctionCall { name, arguments }
                 if stdlib::watched_function(name).is_some()
+                    && !self.functions.contains_key(name)
                     && arguments
                         .first()
                         .is_some_and(|arg| self.infer_type(arg) == Type::Watched) =>
@@ -9982,6 +9986,23 @@ Add 5.0 to second.
 output first.
 output second."),
             "1.0\n6.0\n"
+        );
+    }
+
+    #[test]
+    fn a_function_you_write_wins_over_a_built_in_with_its_name() {
+        assert_eq!(
+            run("To tanh with a watched decimal x returning a standard number:
+    Give back 7.
+End.
+To transpose with a tensor grid returning a standard number:
+    Give back 8.
+End.
+let w be a watched decimal with value 1.0.
+let t be a tensor with value [1.0].
+output the result of tanh with w.
+output the result of transpose with t."),
+            "7\n8\n"
         );
     }
 }
