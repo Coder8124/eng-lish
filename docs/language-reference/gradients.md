@@ -53,6 +53,8 @@ area = 6.0  (times)   gradient 1.0
 
 Read it from the bottom up to see how the answer was built. Read it from the top down to see how the gradients flow back. This flowing back is called the **chain rule**, and it is how every neural network learns.
 
+A really big graph stops after 200 lines, so your screen doesn't fill up.
+
 ## What you can do with watched decimals
 
 | You can write | Example |
