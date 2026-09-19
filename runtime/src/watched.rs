@@ -333,24 +333,42 @@ fn graph_line(node: &Value) -> String {
     line
 }
 
-fn show(node: &Rc<Value>, prefix: &str, last: bool, top: bool, shown: &mut HashSet<*const Value>) {
-    let branch = if top { "" } else if last { "└── " } else { "├── " };
-    let repeat = !node.children.is_empty() && !shown.insert(Rc::as_ptr(node));
-    let suffix = if repeat { "   (shown above)" } else { "" };
-    print_line(&format!("{prefix}{branch}{}{suffix}", graph_line(node)));
-    if repeat {
-        return;
+const GRAPH_LINE_LIMIT: usize = 200;
+
+fn graph_lines(root: &Rc<Value>) -> (Vec<String>, bool) {
+    let mut lines = Vec::new();
+    let mut shown = HashSet::new();
+    let mut stack = vec![(root.clone(), String::new(), true, true)];
+    while let Some((node, prefix, last, top)) = stack.pop() {
+        if lines.len() == GRAPH_LINE_LIMIT {
+            return (lines, true);
+        }
+        let branch = if top { "" } else if last { "└── " } else { "├── " };
+        let repeat = !node.children.is_empty() && !shown.insert(Rc::as_ptr(&node));
+        let suffix = if repeat { "   (shown above)" } else { "" };
+        lines.push(format!("{prefix}{branch}{}{suffix}", graph_line(&node)));
+        if repeat {
+            continue;
+        }
+        let inner = if top { String::new() } else if last { format!("{prefix}    ") } else { format!("{prefix}│   ") };
+        let count = node.children.len();
+        for (index, child) in node.children.iter().enumerate().rev() {
+            stack.push((child.clone(), inner.clone(), index + 1 == count, false));
+        }
     }
-    let inner = if top { String::new() } else if last { format!("{prefix}    ") } else { format!("{prefix}│   ") };
-    for (index, child) in node.children.iter().enumerate() {
-        show(child, &inner, index + 1 == node.children.len(), false, shown);
-    }
+    (lines, false)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn englang_watched_show(root: Handle) {
     let root = unsafe { share(root) };
-    show(&root, "", true, true, &mut HashSet::new());
+    let (lines, more) = graph_lines(&root);
+    for line in lines {
+        print_line(&line);
+    }
+    if more {
+        print_line(&format!("... and more steps. Only the first {GRAPH_LINE_LIMIT} lines are shown."));
+    }
 }
 
 #[cfg(test)]
@@ -435,6 +453,24 @@ mod tests {
             let grown = englang_watched_update(doubled, 0, 1.0);
             assert_ne!(grown, doubled);
             assert_eq!(englang_watched_value(grown), 2.0);
+        }
+    }
+
+    #[test]
+    fn showing_a_long_chain_stops_early() {
+        unsafe {
+            let mut total = englang_watched_constant(0.0);
+            let one = englang_watched_constant(1.0);
+            for _ in 0..200_000 {
+                let next = englang_watched_add(total, one);
+                englang_watched_release(total);
+                total = next;
+            }
+            let (lines, more) = graph_lines(&share(total));
+            assert_eq!(lines.len(), GRAPH_LINE_LIMIT);
+            assert!(more);
+            englang_watched_release(total);
+            englang_watched_release(one);
         }
     }
 
