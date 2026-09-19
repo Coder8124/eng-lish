@@ -1,0 +1,23 @@
+Note: A neural network is layers of tensors.
+Note: Each layer multiplies by its weights, adds its biases,
+Note: and squashes the result with an activation function.
+
+Note: Four examples, two numbers each.
+let inputs be a tensor with value [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]].
+
+Note: Layer 1 turns 2 numbers into 3. Layer 2 turns 3 numbers into 1.
+let weights1 be a tensor with value the result of randomTensor with 2 and 3.
+let biases1 be a tensor with value the result of zeroTensor with 3.
+let weights2 be a tensor with value the result of randomTensor with 3 and 1.
+let biases2 be a tensor with value the result of zeroTensor with 1.
+
+let hidden be a tensor with value the result of tanh with (the result of matmul with inputs and weights1) + biases1.
+let predictions be a tensor with value the result of sigmoid with (the result of matmul with hidden and weights2) + biases2.
+
+output "Hidden layer (one row per example):".
+output hidden.
+output "Predictions (one per example):".
+output predictions.
+
+Note: The weights are random, so these guesses are random too.
+Note: Learning better weights comes next.

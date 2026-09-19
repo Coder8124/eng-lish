@@ -1,0 +1,24 @@
+Note: A tensor is a grid of numbers, like a spreadsheet.
+Note: Each row is a friend. Each column is how many of a snack they bought:
+Note: chips, juice, cookies.
+let orders be a tensor with value [[2, 1, 0], [0, 3, 2], [1, 1, 1]].
+
+output "What everyone ordered:".
+output orders.
+
+Note: One price per snack.
+let prices be a tensor with value [1.5, 2.0, 0.75].
+
+Note: Multiplying lines each row up with the prices, snack by snack.
+output "What each snack cost each friend:".
+output orders * prices.
+
+Note: matmul does that and then adds up each row, giving one bill per friend.
+output "Each friend's bill:".
+output the result of matmul with orders and prices.
+
+output "How many of each snack were sold:".
+output the result of sumAlong with orders and 0.
+
+output "Everything turned on its side:".
+output the transpose of orders.

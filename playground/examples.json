@@ -84,5 +84,15 @@
     "file": "gradient_descent.eng",
     "title": "Gradient descent",
     "description": "Learn the rule behind some points by rolling downhill, one small step at a time."
+  },
+  {
+    "file": "tensors.eng",
+    "title": "Tensors",
+    "description": "Grids of numbers: work out a snack shop's bills with broadcasting and matmul."
+  },
+  {
+    "file": "forward_pass.eng",
+    "title": "Neural network layers",
+    "description": "Push four examples through a two-layer network built from tensors."
   }
 ]
