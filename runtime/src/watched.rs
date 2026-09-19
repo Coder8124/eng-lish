@@ -1,12 +1,8 @@
-use crate::fail;
+use crate::{fail, format_number, print_line};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use std::ffi::{CStr, CString, c_char, c_int};
+use std::ffi::{CStr, c_char, c_int};
 use std::rc::Rc;
-
-unsafe extern "C" {
-    fn printf(format: *const c_char, ...) -> c_int;
-}
 
 #[derive(Clone, Copy)]
 enum Op {
@@ -88,20 +84,6 @@ fn describe(value: &Value) -> String {
         Some(name) => format!("'{name}'"),
         None => "this watched decimal".to_string(),
     }
-}
-
-fn format_number(number: f64) -> String {
-    if !number.is_finite() {
-        return number.to_string();
-    }
-    let rounded: f64 = format!("{number:.9e}").parse().unwrap_or(number);
-    let shown = rounded.to_string();
-    if shown.contains('.') { shown } else { format!("{shown}.0") }
-}
-
-fn print_line(line: &str) {
-    let line = CString::new(line).unwrap_or_default();
-    unsafe { printf(c"%s\n".as_ptr(), line.as_ptr()) };
 }
 
 #[unsafe(no_mangle)]
@@ -366,6 +348,7 @@ pub unsafe extern "C" fn englang_watched_show(root: Handle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
 
     fn leaf(data: f64, name: &str) -> Handle {
         let name = CString::new(name).unwrap();
@@ -458,10 +441,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn numbers_print_like_decimals() {
-        assert_eq!(format_number(4.0), "4.0");
-        assert_eq!(format_number(0.1 + 0.2), "0.3");
-        assert_eq!(format_number(-27.0), "-27.0");
-    }
 }
