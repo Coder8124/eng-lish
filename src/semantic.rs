@@ -427,6 +427,10 @@ impl SemanticAnalyzer {
 
         // Add own methods (may override parent's)
         for method in &class.methods {
+            for param in &method.parameters {
+                self.check_watched_placement(&param.param_type)?;
+            }
+            self.check_watched_placement(&method.return_type)?;
             methods.insert(
                 method.name.clone(),
                 FunctionSignature {
@@ -884,6 +888,13 @@ impl SemanticAnalyzer {
                     Ok(Type::List(Box::new(Type::Int)))
                 } else {
                     let first_type = self.analyze_expression(&elements[0])?;
+                    if is_managed(&first_type) {
+                        return Err(SemanticError::WatchedNotAllowed(
+                            first_type,
+                            "lists".to_string(),
+                            self.current_line,
+                        ));
+                    }
                     for elem in &elements[1..] {
                         let elem_type = self.analyze_expression(elem)?;
                         if elem_type != first_type {
@@ -1411,16 +1422,19 @@ impl SemanticAnalyzer {
     }
 
     fn check_watched_placement(&self, typ: &Type) -> Result<(), SemanticError> {
-        let place: (&str, &Box<Type>) = match typ {
-            Type::List(inner) | Type::Set(inner) if is_managed(inner) => ("lists", inner),
-            Type::Dict(_, inner) if is_managed(inner) => ("dictionaries", inner),
+        let (place, inner) = match typ {
+            Type::List(inner) | Type::Set(inner) => ("lists", inner),
+            Type::Dict(_, inner) => ("dictionaries", inner),
             _ => return Ok(()),
         };
-        Err(SemanticError::WatchedNotAllowed(
-            (**place.1).clone(),
-            place.0.to_string(),
-            self.current_line,
-        ))
+        if is_managed(inner) {
+            return Err(SemanticError::WatchedNotAllowed(
+                (**inner).clone(),
+                place.to_string(),
+                self.current_line,
+            ));
+        }
+        self.check_watched_placement(inner)
     }
 
     fn expect_watched(&mut self, expr: &Expr, what: &str) -> Result<(), SemanticError> {
@@ -1589,6 +1603,27 @@ mod tests {
         assert!(matches!(error, SemanticError::NotWatched(_, Type::Float, 2)));
         let error = first_error("let x be a decimal with value 0.5.\nFind the gradients of x.");
         assert!(matches!(error, SemanticError::NotWatched(_, Type::Float, 2)));
+    }
+
+    #[test]
+    fn watched_decimals_cant_hide_in_nested_lists_or_literals() {
+        let error = first_error(
+            "let w be a watched decimal with value 2.0.\nlet ws be a list of list of watched decimal with value [[w]].",
+        );
+        assert!(matches!(error, SemanticError::WatchedNotAllowed(Type::Watched, _, 2)));
+        let error = first_error(
+            "let t be a tensor with value [1.0].\nlet n be a standard number with value the result of sizeOf with [t].",
+        );
+        assert!(matches!(error, SemanticError::WatchedNotAllowed(Type::Tensor, _, 2)));
+        let error = first_error(concat!(
+            "Define a kind called Maker with the following:\n",
+            "    Property count is a standard number.\n",
+            "    To make with a watched decimal w returning a list of watched decimal:\n",
+            "        Give back [w].\n",
+            "    End.\n",
+            "End kind."
+        ));
+        assert!(matches!(error, SemanticError::WatchedNotAllowed(Type::Watched, _, _)));
     }
 
     #[test]
