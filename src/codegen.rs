@@ -1695,113 +1695,11 @@ impl<'ctx> CodeGen<'ctx> {
             }
         }
 
-        // --- englang_print_float(val: f64) -> void ---
-        // Formats with %.10g, ensures at least one decimal place (e.g. 4 -> "4.0")
-        {
-            let printf = self.printf_fn.ok_or("printf not declared")?;
-
-            let snprintf_type =
-                i32_type.fn_type(&[ptr_type.into(), i64_type.into(), ptr_type.into()], true);
-            let c_snprintf = self.module.add_function("snprintf", snprintf_type, None);
-
-            let strchr_type = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
-            let c_strchr = self.module.add_function("strchr", strchr_type, None);
-
-            let void_type = self.context.void_type();
-            let fn_type = void_type.fn_type(&[f64_type.into()], false);
-            let func = self
-                .module
-                .add_function("englang_print_float", fn_type, None);
-
-            let entry = self.context.append_basic_block(func, "entry");
-            let has_dot_bb = self.context.append_basic_block(func, "has_dot");
-            let no_dot_bb = self.context.append_basic_block(func, "no_dot");
-
-            // entry:
-            self.builder.position_at_end(entry);
-            let val = func.get_nth_param(0).unwrap().into_float_value();
-
-            let buf_array_type = i8_type.array_type(64);
-            let buf = self
-                .builder
-                .build_alloca(buf_array_type, "buf")
-                .map_err(|e| e.to_string())?;
-
-            let gfmt = self
-                .builder
-                .build_global_string_ptr("%.10g", "gfmt")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_call(
-                    c_snprintf,
-                    &[
-                        buf.into(),
-                        i64_type.const_int(64, false).into(),
-                        gfmt.as_pointer_value().into(),
-                        val.into(),
-                    ],
-                    "snp",
-                )
-                .map_err(|e| e.to_string())?;
-
-            // strchr(buf, '.')
-            let dot_result = self
-                .builder
-                .build_call(
-                    c_strchr,
-                    &[buf.into(), i32_type.const_int(46, false).into()],
-                    "dot",
-                )
-                .map_err(|e| e.to_string())?
-                .try_as_basic_value();
-            let dot_ptr = match dot_result {
-                ValueKind::Basic(v) => v.into_pointer_value(),
-                _ => return Err("strchr returned void".to_string()),
-            };
-
-            let is_null = self
-                .builder
-                .build_int_compare(
-                    inkwell::IntPredicate::EQ,
-                    dot_ptr,
-                    ptr_type.const_null(),
-                    "is_null",
-                )
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_conditional_branch(is_null, no_dot_bb, has_dot_bb)
-                .map_err(|e| e.to_string())?;
-
-            // no_dot: printf("%s.0\n", buf)
-            self.builder.position_at_end(no_dot_bb);
-            let fmt_no_dot = self
-                .builder
-                .build_global_string_ptr("%s.0\n", "fmt_nodot")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_call(
-                    printf,
-                    &[fmt_no_dot.as_pointer_value().into(), buf.into()],
-                    "p_nodot",
-                )
-                .map_err(|e| e.to_string())?;
-            self.builder.build_return(None).map_err(|e| e.to_string())?;
-
-            // has_dot: printf("%s\n", buf)
-            self.builder.position_at_end(has_dot_bb);
-            let fmt_has_dot = self
-                .builder
-                .build_global_string_ptr("%s\n", "fmt_hasdot")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_call(
-                    printf,
-                    &[fmt_has_dot.as_pointer_value().into(), buf.into()],
-                    "p_hasdot",
-                )
-                .map_err(|e| e.to_string())?;
-            self.builder.build_return(None).map_err(|e| e.to_string())?;
-        }
+        self.module.add_function(
+            "englang_print_decimal",
+            self.context.void_type().fn_type(&[f64_type.into()], false),
+            None,
+        );
 
         // Declare additional C functions for I/O and utilities
         let scanf_type = i32_type.fn_type(&[ptr_type.into()], true); // varargs
@@ -2105,51 +2003,12 @@ impl<'ctx> CodeGen<'ctx> {
             }
         }
 
-        // --- decimalToText(f: f64) -> ptr ---
         {
-            let fn_type = ptr_type.fn_type(&[f64_type.into()], false);
-            let func = self
-                .module
-                .add_function("englang_decimalToText", fn_type, None);
-            let entry = self.context.append_basic_block(func, "entry");
-            self.builder.position_at_end(entry);
-
-            let f = func.get_nth_param(0).unwrap().into_float_value();
-
-            // Allocate buffer (64 bytes should be enough for most floats)
-            let buf_size = i64_type.const_int(64, false);
-            let buf_result = self
-                .builder
-                .build_call(malloc, &[buf_size.into()], "buf")
-                .map_err(|e| e.to_string())?
-                .try_as_basic_value();
-            let buf = match buf_result {
-                ValueKind::Basic(v) => v.into_pointer_value(),
-                _ => return Err("malloc returned void".to_string()),
-            };
-
-            // snprintf(buf, 64, "%.10g", f)
-            let fmt = self
-                .builder
-                .build_global_string_ptr("%.10g", "float_fmt")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_call(
-                    c_snprintf,
-                    &[
-                        buf.into(),
-                        buf_size.into(),
-                        fmt.as_pointer_value().into(),
-                        f.into(),
-                    ],
-                    "snprintf_result",
-                )
-                .map_err(|e| e.to_string())?;
-
-            self.builder
-                .build_return(Some(&buf))
-                .map_err(|e| e.to_string())?;
-
+            let func = self.module.add_function(
+                "englang_decimal_text",
+                ptr_type.fn_type(&[f64_type.into()], false),
+                None,
+            );
             for name in &["decimalToText", "floatToString"] {
                 self.builtin_functions.insert(name.to_string(), func);
                 self.builtin_return_types
@@ -9174,8 +9033,8 @@ impl<'ctx> CodeGen<'ctx> {
         if let BasicValueEnum::FloatValue(fv) = value {
             let print_float = self
                 .module
-                .get_function("englang_print_float")
-                .ok_or("englang_print_float not declared")?;
+                .get_function("englang_print_decimal")
+                .ok_or("englang_print_decimal not declared")?;
             self.builder
                 .build_call(print_float, &[fv.into()], "pf")
                 .map_err(|e| e.to_string())?;
