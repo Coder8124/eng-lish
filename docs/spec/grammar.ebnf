@@ -30,6 +30,7 @@ type           = "text"
                | "standard number"
                | "decimal"
                | "watched decimal"
+               | "tensor"
                | "boolean"
                | "list" [ "of" type ]
                | dictionary-type

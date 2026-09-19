@@ -9,6 +9,7 @@ type = "text"
      | "standard number"
      | "decimal"
      | "watched decimal"
+     | "tensor"
      | "boolean"
      | "list" [ "of" type ]
      | dictionary-type
@@ -22,6 +23,7 @@ type = "text"
 | `text` | A string of characters | |
 | `standard number` | A whole number | 64-bit signed |
 | `decimal` | A number with a fractional part | 64-bit floating point |
+| `tensor` | A grid of decimals with any number of dimensions (a shape) | Cannot be an element of a list or dictionary, or a property of a class. The word must be lowercase |
 | `watched decimal` | A decimal that remembers how it was worked out, so its gradients can be found | See [4.12](04-statements.md#412-gradients). Cannot be an element of a list or dictionary, or a property of a class |
 | `boolean` | `true` or `false` | |
 | `list of T` | Many values of one type `T` | Plain `list` means `list of standard number` |
@@ -60,6 +62,8 @@ An implementation **may** accept these for compatibility. Programs **must not** 
 Types **must** match exactly, with one convenience: where a `decimal` is expected, a `standard number` is accepted and widened automatically. This applies to arithmetic, to arguments of built-in maths functions, and to assignment.
 
 The reverse is not allowed. A `decimal` will not silently become a `standard number`, because that would lose the fractional part.
+
+A `tensor` accepts a `decimal`, a `standard number` (a single-number tensor), or a list of them nested to any depth, anywhere one is expected. Every inner list at the same depth **must** have the same length; this is checked when the program runs. Arithmetic with at least one tensor operand produces a `tensor`, and a smaller shape is broadcast against a larger one: shapes are aligned from the right, and each pair of sizes **must** be equal or include a 1. Tensors cannot be compared, and cannot be mixed with watched decimals. `the value of t` or `decimal of t` reads out a tensor holding exactly one number.
 
 A `watched decimal` accepts a `decimal` or `standard number` anywhere one is expected. Arithmetic with at least one watched operand produces a `watched decimal`. Storing such a result in a `decimal` or `standard number` variable is rejected; `the value of w` or `decimal of w` reads the plain number out.
 
