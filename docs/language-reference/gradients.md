@@ -87,6 +87,6 @@ output guess.
 
 It prints `3.0`.
 
-`Subtract 0.01 * the gradient of guess from guess.` changes `guess` itself, so the next round builds its loss from the new guess. The `0.01` is the **step size** (also called the learning rate). Too big and the guess jumps right past the answer. Too small and learning takes forever. Try changing it!
+`Subtract 0.01 * the gradient of guess from guess.` gives `guess` its new value, so the next round builds its loss from the new guess. The `0.01` is the **step size** (also called the learning rate). Too big and the guess jumps right past the answer. Too small and learning takes forever. Try changing it!
 
 For a bigger example, see `examples/gradient_descent.eng`. It learns the slope and starting point of a line from four points.

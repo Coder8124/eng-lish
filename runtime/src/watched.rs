@@ -196,21 +196,29 @@ pub unsafe extern "C" fn englang_watched_logarithm(a: Handle) -> Handle {
     unsafe { unary(a, Op::Logarithm, x.ln()) }
 }
 
-// A plain number is folded straight into a leaf so the same watched decimal
-// keeps being the one the graph points at; anything else gets a new node.
+// Nudging a starting value makes a fresh one with the same name and gradient
+// rather than editing it in place: another variable may share the node, and
+// graphs already built from it should keep the value they were built with.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn englang_watched_update(target: Handle, op: c_int, amount: f64) -> Handle {
     let value = unsafe { get(target) };
     if matches!(value.op, Op::Leaf) {
         let old = value.data.get();
-        value.data.set(match op {
-            0 => old + amount,
-            1 => old - amount,
-            2 => old * amount,
-            _ => old / amount,
-        });
-        unsafe { englang_watched_retain(target) };
-        return target;
+        let nudged = make(
+            match op {
+                0 => old + amount,
+                1 => old - amount,
+                2 => old * amount,
+                _ => old / amount,
+            },
+            Op::Leaf,
+            Vec::new(),
+        );
+        let fresh = unsafe { get(nudged) };
+        fresh.gradient.set(value.gradient.get());
+        fresh.has_gradient.set(value.has_gradient.get());
+        *fresh.name.borrow_mut() = value.name.borrow().clone();
+        return nudged;
     }
     let constant = englang_watched_constant(amount);
     let result = unsafe {
@@ -412,16 +420,21 @@ mod tests {
     }
 
     #[test]
-    fn updating_a_leaf_keeps_the_same_node() {
+    fn updating_a_leaf_leaves_the_original_alone() {
         unsafe {
             let w = leaf(1.0, "w");
-            let same = englang_watched_update(w, 1, 0.25);
-            assert_eq!(same, w);
-            assert_eq!(englang_watched_value(w), 0.75);
+            let square = englang_watched_multiply(w, w);
+            englang_watched_backward(square);
+            let nudged = englang_watched_update(w, 1, 0.25);
+            assert_ne!(nudged, w);
+            assert_eq!(englang_watched_value(w), 1.0);
+            assert_eq!(englang_watched_value(nudged), 0.75);
+            assert_eq!(englang_watched_gradient(nudged), 2.0);
+            assert_eq!(englang_watched_value(square), 1.0);
             let doubled = englang_watched_multiply(w, w);
             let grown = englang_watched_update(doubled, 0, 1.0);
             assert_ne!(grown, doubled);
-            assert_eq!(englang_watched_value(grown), 1.5625);
+            assert_eq!(englang_watched_value(grown), 2.0);
         }
     }
 

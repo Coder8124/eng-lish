@@ -9972,4 +9972,16 @@ output result."),
             "[ 8.0  16.0 ]\n"
         );
     }
+
+    #[test]
+    fn nudging_one_watched_decimal_leaves_its_copy_alone() {
+        assert_eq!(
+            run("let first be a watched decimal with value 1.0.
+let second be a watched decimal with value first.
+Add 5.0 to second.
+output first.
+output second."),
+            "1.0\n6.0\n"
+        );
+    }
 }

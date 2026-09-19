@@ -263,7 +263,7 @@ The expression **must** be a `watched decimal`. `Find the gradients of` sets the
 
 `sigmoid`, `relu`, `tanh`, `exponential`, `logarithm` and `power` (with a plain-number exponent) accept a watched decimal and produce one.
 
-An arithmetic sentence with a plain-number amount (`Subtract 0.1 from w.`) changes a watched decimal in place when it was declared directly with a number, so results that were already worked out from it keep pointing at it. When the target was itself worked out from other watched decimals, the sentence builds a new step instead. `Set w to 0.5.` always makes a new watched decimal.
+An arithmetic sentence with a plain-number amount (`Subtract 0.1 from w.`) on a watched decimal that was declared directly with a number gives the variable a new watched decimal with the new value, keeping its name and gradient. Other variables that shared the old one, and results already worked out from it, are unchanged. When the target was itself worked out from other watched decimals, the sentence builds a new step instead. `Set w to 0.5.` always makes a new watched decimal.
 
 ## 4.13 Statements made of an expression
 
