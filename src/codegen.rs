@@ -1,4 +1,5 @@
 use crate::ast::*;
+use crate::semantic::is_managed;
 use crate::stdlib;
 use inkwell::OptimizationLevel;
 use inkwell::basic_block::BasicBlock;
@@ -49,10 +50,11 @@ pub struct CodeGen<'ctx> {
     signatures: HashMap<String, (Vec<Type>, Type)>,
     /// Return type of the function being compiled
     current_return_type: Option<Type>,
-    /// Watched decimals made by the current statement, released when it ends
-    watched_temps: Vec<PointerValue<'ctx>>,
-    /// Variables in the current function holding a watched decimal
-    watched_slots: Vec<PointerValue<'ctx>>,
+    /// Watched decimals and tensors made by the current statement, released
+    /// when it ends
+    managed_temps: Vec<(PointerValue<'ctx>, Type)>,
+    /// Variables in the current function holding a watched decimal or tensor
+    managed_slots: Vec<(PointerValue<'ctx>, Type)>,
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -81,8 +83,8 @@ impl<'ctx> CodeGen<'ctx> {
             loop_continue_stack: Vec::new(),
             signatures: HashMap::new(),
             current_return_type: None,
-            watched_temps: Vec::new(),
-            watched_slots: Vec::new(),
+            managed_temps: Vec::new(),
+            managed_slots: Vec::new(),
         }
     }
 
@@ -809,6 +811,7 @@ impl<'ctx> CodeGen<'ctx> {
         let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
         let f64_type = self.context.f64_type();
         let i32_type = self.context.i32_type();
+        let i64_type = self.context.i64_type();
         let void = self.context.void_type();
         let declarations = [
             ("englang_watched_new", ptr.fn_type(&[f64_type.into(), ptr.into()], false)),
@@ -835,6 +838,43 @@ impl<'ctx> CodeGen<'ctx> {
             ),
             ("englang_watched_backward", void.fn_type(&[ptr.into()], false)),
             ("englang_watched_show", void.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_retain", void.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_release", void.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_scalar", ptr.fn_type(&[f64_type.into()], false)),
+            (
+                "englang_tensor_from_list",
+                ptr.fn_type(&[ptr.into(), i64_type.into(), i64_type.into()], false),
+            ),
+            (
+                "englang_tensor_filled",
+                ptr.fn_type(&[i64_type.into(), ptr.into(), i64_type.into()], false),
+            ),
+            (
+                "englang_tensor_reshape",
+                ptr.fn_type(&[ptr.into(), ptr.into(), i64_type.into()], false),
+            ),
+            ("englang_tensor_add", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_tensor_subtract", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_tensor_multiply", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_tensor_divide", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_tensor_matmul", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_tensor_negate", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_power", ptr.fn_type(&[ptr.into(), f64_type.into()], false)),
+            ("englang_tensor_sigmoid", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_relu", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_tanh", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_exponential", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_logarithm", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_softmax", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_transpose", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_sum", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_mean", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_sum_along", ptr.fn_type(&[ptr.into(), i64_type.into()], false)),
+            ("englang_tensor_mean_along", ptr.fn_type(&[ptr.into(), i64_type.into()], false)),
+            ("englang_tensor_shape", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_value", f64_type.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_index", ptr.fn_type(&[ptr.into(), i64_type.into()], false)),
+            ("englang_tensor_print", void.fn_type(&[ptr.into()], false)),
         ];
         for (name, fn_type) in declarations {
             self.module.add_function(name, fn_type, None);
@@ -860,75 +900,124 @@ impl<'ctx> CodeGen<'ctx> {
         })
     }
 
+    fn new_managed(
+        &mut self,
+        name: &str,
+        args: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
+        typ: Type,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let handle = self
+            .call_runtime(name, args)?
+            .ok_or("runtime call returned nothing")?
+            .into_pointer_value();
+        self.managed_temps.push((handle, typ));
+        Ok(handle)
+    }
+
     fn new_watched(
         &mut self,
         name: &str,
         args: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
     ) -> Result<PointerValue<'ctx>, String> {
-        let handle = self
-            .call_runtime(name, args)?
-            .ok_or("watched runtime call returned nothing")?
-            .into_pointer_value();
-        self.watched_temps.push(handle);
-        Ok(handle)
+        self.new_managed(name, args, Type::Watched)
+    }
+
+    fn new_tensor(
+        &mut self,
+        name: &str,
+        args: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
+    ) -> Result<PointerValue<'ctx>, String> {
+        self.new_managed(name, args, Type::Tensor)
+    }
+
+    fn retain_managed(&self, handle: PointerValue<'ctx>, typ: &Type) -> Result<(), String> {
+        let name = if *typ == Type::Tensor {
+            "englang_tensor_retain"
+        } else {
+            "englang_watched_retain"
+        };
+        self.call_runtime(name, &[handle.into()])?;
+        Ok(())
+    }
+
+    fn release_managed(&self, handle: BasicValueEnum<'ctx>, typ: &Type) -> Result<(), String> {
+        let name = if *typ == Type::Tensor {
+            "englang_tensor_release"
+        } else {
+            "englang_watched_release"
+        };
+        self.call_runtime(name, &[handle.into()])?;
+        Ok(())
     }
 
     fn release_temps(&mut self, mark: usize) -> Result<(), String> {
-        for handle in self.watched_temps.split_off(mark) {
-            self.call_runtime("englang_watched_release", &[handle.into()])?;
+        for (handle, typ) in self.managed_temps.split_off(mark) {
+            self.release_managed(handle.into(), &typ)?;
         }
         Ok(())
     }
 
     fn release_slots(&mut self) -> Result<(), String> {
         let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
-        for slot in self.watched_slots.clone() {
+        for (slot, typ) in self.managed_slots.clone() {
             let handle = self
                 .builder
-                .build_load(ptr, slot, "watched_old")
+                .build_load(ptr, slot, "managed_old")
                 .map_err(|e| e.to_string())?;
-            self.call_runtime("englang_watched_release", &[handle.into()])?;
+            self.release_managed(handle, &typ)?;
         }
         Ok(())
     }
 
-    // Slots live in the entry block and start empty, so a slot that is filled
-    // inside a loop can release what the previous pass stored there.
-    fn watched_slot(&mut self, name: &str) -> Result<PointerValue<'ctx>, String> {
-        let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
+    fn entry_alloca(
+        &self,
+        typ: BasicTypeEnum<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, String> {
         let entry = self
             .builder
             .get_insert_block()
             .and_then(|b| b.get_parent())
             .and_then(|f| f.get_first_basic_block())
-            .ok_or("no function to hold a watched decimal")?;
+            .ok_or("no function to hold a variable")?;
         let entry_builder = self.context.create_builder();
         match entry.get_first_instruction() {
             Some(first) => entry_builder.position_before(&first),
             None => entry_builder.position_at_end(entry),
         }
         let slot = entry_builder
-            .build_alloca(ptr, name)
+            .build_alloca(typ, name)
             .map_err(|e| e.to_string())?;
-        entry_builder
-            .build_store(slot, ptr.const_null())
-            .map_err(|e| e.to_string())?;
-        self.watched_slots.push(slot);
+        if typ.is_pointer_type() {
+            entry_builder
+                .build_store(slot, typ.into_pointer_type().const_null())
+                .map_err(|e| e.to_string())?;
+        }
         Ok(slot)
     }
 
-    fn store_watched(
+    // Slots live in the entry block and start empty, so a slot that is filled
+    // inside a loop can release what the previous pass stored there.
+    fn managed_slot(&mut self, name: &str, typ: &Type) -> Result<PointerValue<'ctx>, String> {
+        let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
+        let slot = self.entry_alloca(ptr.into(), name)?;
+        self.managed_slots.push((slot, typ.clone()));
+        Ok(slot)
+    }
+
+    fn store_managed(
         &mut self,
         slot: PointerValue<'ctx>,
         handle: PointerValue<'ctx>,
+        typ: &Type,
     ) -> Result<(), String> {
         let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
-        self.call_runtime("englang_watched_retain", &[handle.into()])?;
+        self.retain_managed(handle, typ)?;
         let old = self
             .builder
-            .build_load(ptr, slot, "watched_old")
+            .build_load(ptr, slot, "managed_old")
             .map_err(|e| e.to_string())?;
-        self.call_runtime("englang_watched_release", &[old.into()])?;
+        self.release_managed(old, typ)?;
         self.builder
             .build_store(slot, handle)
             .map_err(|e| e.to_string())?;
@@ -936,6 +1025,11 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     fn compile_number(&mut self, expr: &Expr) -> Result<inkwell::values::FloatValue<'ctx>, String> {
+        let value_fn = if self.infer_type(expr) == Type::Tensor {
+            "englang_tensor_value"
+        } else {
+            "englang_watched_value"
+        };
         let value = self.compile_expression(expr)?;
         match value {
             BasicValueEnum::FloatValue(v) => Ok(v),
@@ -944,8 +1038,8 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_signed_int_to_float(v, self.context.f64_type(), "itof")
                 .map_err(|e| e.to_string()),
             BasicValueEnum::PointerValue(p) => Ok(self
-                .call_runtime("englang_watched_value", &[p.into()])?
-                .ok_or("englang_watched_value returned nothing")?
+                .call_runtime(value_fn, &[p.into()])?
+                .ok_or("value call returned nothing")?
                 .into_float_value()),
             _ => Err("Expected a number".to_string()),
         }
@@ -957,6 +1051,40 @@ impl<'ctx> CodeGen<'ctx> {
         }
         let number = self.compile_number(expr)?;
         self.new_watched("englang_watched_constant", &[number.into()])
+    }
+
+    fn compile_tensor(&mut self, expr: &Expr) -> Result<PointerValue<'ctx>, String> {
+        let mut typ = self.infer_type(expr);
+        if typ == Type::Tensor {
+            return Ok(self.compile_expression(expr)?.into_pointer_value());
+        }
+        if !matches!(typ, Type::List(_)) {
+            let number = self.compile_number(expr)?;
+            return self.new_tensor("englang_tensor_scalar", &[number.into()]);
+        }
+        let list = self.compile_expression(expr)?;
+        let mut depth = 0;
+        while let Type::List(inner) = typ {
+            depth += 1;
+            typ = *inner;
+        }
+        let i64_type = self.context.i64_type();
+        self.new_tensor(
+            "englang_tensor_from_list",
+            &[
+                list.into(),
+                i64_type.const_int(depth, false).into(),
+                i64_type.const_int((typ == Type::Int) as u64, false).into(),
+            ],
+        )
+    }
+
+    fn compile_managed(&mut self, expr: &Expr, typ: &Type) -> Result<PointerValue<'ctx>, String> {
+        if *typ == Type::Tensor {
+            self.compile_tensor(expr)
+        } else {
+            self.compile_watched(expr)
+        }
     }
 
     /// A watched decimal stored under `name`: plain numbers become a new
@@ -978,6 +1106,14 @@ impl<'ctx> CodeGen<'ctx> {
         }
         let number = self.compile_number(expr)?;
         self.new_watched("englang_watched_new", &[number.into(), label.into()])
+    }
+
+    fn compile_stored(&mut self, expr: &Expr, name: &str, typ: &Type) -> Result<PointerValue<'ctx>, String> {
+        if *typ == Type::Watched {
+            self.compile_named_watched(expr, name)
+        } else {
+            self.compile_tensor(expr)
+        }
     }
 
     fn compile_watched_binary(
@@ -1002,6 +1138,107 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(self.new_watched(runtime_name, &[l.into(), r.into()])?.into())
     }
 
+    fn compile_tensor_binary(
+        &mut self,
+        op: &BinaryOp,
+        left: &Expr,
+        right: &Expr,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let runtime_name = match op {
+            BinaryOp::Add => "englang_tensor_add",
+            BinaryOp::Subtract => "englang_tensor_subtract",
+            BinaryOp::Multiply => "englang_tensor_multiply",
+            _ => "englang_tensor_divide",
+        };
+        let l = self.compile_tensor(left)?;
+        let r = self.compile_tensor(right)?;
+        self.new_tensor(runtime_name, &[l.into(), r.into()])
+    }
+
+    fn tensor_call(&self, name: &str, arguments: &[Expr]) -> Option<stdlib::TensorCall> {
+        let (call, tensor_only) = stdlib::tensor_function(name)?;
+        let applies = if tensor_only {
+            !self.functions.contains_key(name)
+        } else {
+            arguments
+                .first()
+                .is_some_and(|arg| self.infer_type(arg) == Type::Tensor)
+        };
+        applies.then_some(call)
+    }
+
+    fn compile_tensor_call(
+        &mut self,
+        call: stdlib::TensorCall,
+        arguments: &[Expr],
+    ) -> Result<PointerValue<'ctx>, String> {
+        use stdlib::TensorCall::*;
+        let i64_type = self.context.i64_type();
+        match call {
+            Filled(kind) => {
+                let (dims, count) = self.compile_sizes(arguments)?;
+                self.new_tensor(
+                    "englang_tensor_filled",
+                    &[i64_type.const_int(kind as u64, false).into(), dims.into(), count.into()],
+                )
+            }
+            Reshape => {
+                let tensor = self.compile_tensor(&arguments[0])?;
+                let (dims, count) = self.compile_sizes(&arguments[1..])?;
+                self.new_tensor(
+                    "englang_tensor_reshape",
+                    &[tensor.into(), dims.into(), count.into()],
+                )
+            }
+            Unary(runtime_name) => {
+                let tensor = self.compile_tensor(&arguments[0])?;
+                self.new_tensor(runtime_name, &[tensor.into()])
+            }
+            Power => {
+                let tensor = self.compile_tensor(&arguments[0])?;
+                let exponent = self.compile_number(&arguments[1])?;
+                self.new_tensor("englang_tensor_power", &[tensor.into(), exponent.into()])
+            }
+            Binary(runtime_name) => {
+                let left = self.compile_tensor(&arguments[0])?;
+                let right = self.compile_tensor(&arguments[1])?;
+                self.new_tensor(runtime_name, &[left.into(), right.into()])
+            }
+            Along(runtime_name) => {
+                let tensor = self.compile_tensor(&arguments[0])?;
+                let axis = self.compile_expression(&arguments[1])?;
+                self.new_tensor(runtime_name, &[tensor.into(), axis.into()])
+            }
+        }
+    }
+
+    /// Sizes go to the runtime as a pointer to an array of whole numbers and
+    /// how many there are.
+    fn compile_sizes(
+        &mut self,
+        sizes: &[Expr],
+    ) -> Result<(PointerValue<'ctx>, inkwell::values::IntValue<'ctx>), String> {
+        let i64_type = self.context.i64_type();
+        let array_type = i64_type.array_type(sizes.len() as u32);
+        let array = self.entry_alloca(array_type.into(), "sizes")?;
+        for (i, size) in sizes.iter().enumerate() {
+            let value = self.compile_expression(size)?;
+            let at = unsafe {
+                self.builder.build_in_bounds_gep(
+                    array_type,
+                    array,
+                    &[i64_type.const_zero(), i64_type.const_int(i as u64, false)],
+                    "size",
+                )
+            }
+            .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(at, value)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok((array, i64_type.const_int(sizes.len() as u64, false)))
+    }
+
     fn compile_args(
         &mut self,
         arguments: &[Expr],
@@ -1009,10 +1246,9 @@ impl<'ctx> CodeGen<'ctx> {
         args: &mut Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>,
     ) -> Result<(), String> {
         for (i, arg) in arguments.iter().enumerate() {
-            if param_types.get(i) == Some(&Type::Watched) {
-                args.push(self.compile_watched(arg)?.into());
-            } else {
-                args.push(self.compile_expression(arg)?.into());
+            match param_types.get(i) {
+                Some(typ) if is_managed(typ) => args.push(self.compile_managed(arg, typ)?.into()),
+                _ => args.push(self.compile_expression(arg)?.into()),
             }
         }
         Ok(())
@@ -1024,9 +1260,9 @@ impl<'ctx> CodeGen<'ctx> {
         param_type: &Type,
         value: BasicValueEnum<'ctx>,
     ) -> Result<(), String> {
-        let slot = if *param_type == Type::Watched {
-            let slot = self.watched_slot(name)?;
-            self.store_watched(slot, value.into_pointer_value())?;
+        let slot = if is_managed(param_type) {
+            let slot = self.managed_slot(name, param_type)?;
+            self.store_managed(slot, value.into_pointer_value(), param_type)?;
             slot
         } else {
             let alloca = self
@@ -1043,13 +1279,16 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(())
     }
 
-    fn return_watched_result(
+    fn track_managed_result(
         &mut self,
         key: &str,
         value: BasicValueEnum<'ctx>,
     ) -> BasicValueEnum<'ctx> {
-        if self.signatures.get(key).map(|(_, ret)| ret) == Some(&Type::Watched) {
-            self.watched_temps.push(value.into_pointer_value());
+        if let Some((_, ret)) = self.signatures.get(key)
+            && is_managed(ret)
+        {
+            let ret = ret.clone();
+            self.managed_temps.push((value.into_pointer_value(), ret));
         }
         value
     }
@@ -7218,7 +7457,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Save and clear current variables scope
         let saved_vars = std::mem::take(&mut self.variables);
-        let saved_slots = std::mem::take(&mut self.watched_slots);
+        let saved_slots = std::mem::take(&mut self.managed_slots);
         let saved_return = self.current_return_type.replace(func.return_type.clone());
 
         // Bind parameters to allocas
@@ -7249,7 +7488,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Restore variables
         self.variables = saved_vars;
-        self.watched_slots = saved_slots;
+        self.managed_slots = saved_slots;
         self.current_return_type = saved_return;
         Ok(())
     }
@@ -7379,7 +7618,7 @@ impl<'ctx> CodeGen<'ctx> {
             let saved_vars = std::mem::take(&mut self.variables);
             let saved_self = self.current_self.take();
             let saved_class = self.current_class_name.take();
-            let saved_slots = std::mem::take(&mut self.watched_slots);
+            let saved_slots = std::mem::take(&mut self.managed_slots);
             let saved_return = self.current_return_type.replace(Type::Void);
 
             let self_ptr = ctor_fn.get_nth_param(0).unwrap().into_pointer_value();
@@ -7414,7 +7653,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.variables = saved_vars;
             self.current_self = saved_self;
             self.current_class_name = saved_class;
-            self.watched_slots = saved_slots;
+            self.managed_slots = saved_slots;
             self.current_return_type = saved_return;
         }
 
@@ -7433,7 +7672,7 @@ impl<'ctx> CodeGen<'ctx> {
             let saved_vars = std::mem::take(&mut self.variables);
             let saved_self = self.current_self.take();
             let saved_class = self.current_class_name.take();
-            let saved_slots = std::mem::take(&mut self.watched_slots);
+            let saved_slots = std::mem::take(&mut self.managed_slots);
             let saved_return = self.current_return_type.replace(method.return_type.clone());
 
             let self_ptr = method_fn.get_nth_param(0).unwrap().into_pointer_value();
@@ -7476,7 +7715,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.variables = saved_vars;
             self.current_self = saved_self;
             self.current_class_name = saved_class;
-            self.watched_slots = saved_slots;
+            self.managed_slots = saved_slots;
             self.current_return_type = saved_return;
         }
 
@@ -7495,6 +7734,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.compile_statement(stmt)?;
         }
 
+        self.release_slots()?;
         self.builder
             .build_return(Some(&i32_type.const_int(0, false)))
             .map_err(|e| e.to_string())?;
@@ -7503,10 +7743,10 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     fn compile_statement(&mut self, stmt: &Statement) -> Result<(), String> {
-        let mark = self.watched_temps.len();
+        let mark = self.managed_temps.len();
         self.compile_statement_inner(stmt)?;
         if self.current_block_has_terminator() {
-            self.watched_temps.truncate(mark);
+            self.managed_temps.truncate(mark);
             Ok(())
         } else {
             self.release_temps(mark)
@@ -7517,21 +7757,30 @@ impl<'ctx> CodeGen<'ctx> {
         match stmt {
             Statement::VariableDecl {
                 name,
-                var_type: Type::Watched,
+                var_type,
                 value,
-            } => {
-                let slot = self.watched_slot(name)?;
-                let handle = self.compile_named_watched(value, name)?;
-                self.store_watched(slot, handle)?;
-                self.variables.insert(name.clone(), (slot, Type::Watched));
+            } if is_managed(var_type) => {
+                let slot = self.managed_slot(name, var_type)?;
+                let handle = self.compile_stored(value, name, var_type)?;
+                self.store_managed(slot, handle, var_type)?;
+                self.variables.insert(name.clone(), (slot, var_type.clone()));
             }
 
             Statement::Assignment { name, value }
-                if self.variables.get(name).map(|(_, t)| t) == Some(&Type::Watched) =>
+                if self.variables.get(name).is_some_and(|(_, t)| is_managed(t)) =>
+            {
+                let (slot, typ) = self.variables[name].clone();
+                let handle = self.compile_stored(value, name, &typ)?;
+                self.store_managed(slot, handle, &typ)?;
+            }
+
+            Statement::CompoundAssignment { name, op, value }
+                if self.variables.get(name).map(|(_, t)| t) == Some(&Type::Tensor) =>
             {
                 let slot = self.variables[name].0;
-                let handle = self.compile_named_watched(value, name)?;
-                self.store_watched(slot, handle)?;
+                let current = Expr::Identifier(name.clone());
+                let updated = self.compile_tensor_binary(op, &current, value)?;
+                self.store_managed(slot, updated, &Type::Tensor)?;
             }
 
             Statement::CompoundAssignment { name, op, value }
@@ -7562,7 +7811,12 @@ impl<'ctx> CodeGen<'ctx> {
                         &[current.into(), code.into(), amount.into()],
                     )?
                 };
-                self.store_watched(slot, updated)?;
+                self.store_managed(slot, updated, &Type::Watched)?;
+            }
+
+            Statement::Output(expr) if self.infer_type(expr) == Type::Tensor => {
+                let handle = self.compile_tensor(expr)?;
+                self.call_runtime("englang_tensor_print", &[handle.into()])?;
             }
 
             Statement::Output(expr) if self.infer_type(expr) == Type::Watched => {
@@ -7631,7 +7885,7 @@ impl<'ctx> CodeGen<'ctx> {
                 else_ifs,
                 else_block,
             } => {
-                let mark = self.watched_temps.len();
+                let mark = self.managed_temps.len();
                 let cond_value = self.compile_expression(condition)?;
                 let cond_bool = match cond_value {
                     BasicValueEnum::IntValue(v) => v,
@@ -7676,7 +7930,7 @@ impl<'ctx> CodeGen<'ctx> {
                 for (i, (elif_cond, elif_block)) in else_ifs.iter().enumerate() {
                     self.builder.position_at_end(next_bb);
 
-                    let mark = self.watched_temps.len();
+                    let mark = self.managed_temps.len();
                     let elif_cond_value = self.compile_expression(elif_cond)?;
                     let elif_cond_bool = match elif_cond_value {
                         BasicValueEnum::IntValue(v) => v,
@@ -7743,7 +7997,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .map_err(|e| e.to_string())?;
 
                 self.builder.position_at_end(cond_bb);
-                let mark = self.watched_temps.len();
+                let mark = self.managed_temps.len();
                 let cond_value = self.compile_expression(condition)?;
                 let cond_bool = match cond_value {
                     BasicValueEnum::IntValue(v) => v,
@@ -7785,7 +8039,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .unwrap();
 
                 // Compile start and end values
-                let mark = self.watched_temps.len();
+                let mark = self.managed_temps.len();
                 let start_val = self.compile_expression(start)?;
                 let end_val = self.compile_expression(end)?;
                 self.release_temps(mark)?;
@@ -7994,11 +8248,14 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             Statement::Return(expr) => {
-                let mark = self.watched_temps.len();
+                let mark = self.managed_temps.len();
                 let val = match expr {
-                    Some(return_expr) if self.current_return_type == Some(Type::Watched) => {
-                        let handle = self.compile_watched(return_expr)?;
-                        self.call_runtime("englang_watched_retain", &[handle.into()])?;
+                    Some(return_expr)
+                        if self.current_return_type.as_ref().is_some_and(is_managed) =>
+                    {
+                        let typ = self.current_return_type.clone().unwrap();
+                        let handle = self.compile_managed(return_expr, &typ)?;
+                        self.retain_managed(handle, &typ)?;
                         Some(BasicValueEnum::from(handle))
                     }
                     Some(return_expr) => Some(self.compile_expression(return_expr)?),
@@ -8191,6 +8448,59 @@ impl<'ctx> CodeGen<'ctx> {
                     .builder
                     .build_load(llvm_type, ptr, name)
                     .map_err(|e| e.to_string())?)
+            }
+
+            Expr::BinaryOp { op, left, right }
+                if self.infer_type(left) == Type::Tensor
+                    || self.infer_type(right) == Type::Tensor =>
+            {
+                Ok(self.compile_tensor_binary(op, left, right)?.into())
+            }
+
+            Expr::UnaryOp {
+                op: UnaryOp::Negate,
+                operand,
+            } if self.infer_type(operand) == Type::Tensor => {
+                let handle = self.compile_tensor(operand)?;
+                Ok(self
+                    .new_tensor("englang_tensor_negate", &[handle.into()])?
+                    .into())
+            }
+
+            Expr::FunctionCall { name, arguments } if self.tensor_call(name, arguments).is_some() => {
+                let call = self.tensor_call(name, arguments).unwrap();
+                Ok(self.compile_tensor_call(call, arguments)?.into())
+            }
+
+            Expr::PropertyAccess { object, property }
+                if self.infer_type(object) == Type::Tensor =>
+            {
+                let handle = self.compile_expression(object)?;
+                match property.as_str() {
+                    "shape" => Ok(self
+                        .call_runtime("englang_tensor_shape", &[handle.into()])?
+                        .ok_or("englang_tensor_shape returned nothing")?),
+                    "value" => Ok(self
+                        .call_runtime("englang_tensor_value", &[handle.into()])?
+                        .ok_or("englang_tensor_value returned nothing")?),
+                    other => Ok(self
+                        .new_tensor(&format!("englang_tensor_{}", other), &[handle.into()])?
+                        .into()),
+                }
+            }
+
+            Expr::TypeConversion { target_type: Type::Float, expr }
+                if self.infer_type(expr) == Type::Tensor =>
+            {
+                Ok(self.compile_number(expr)?.into())
+            }
+
+            Expr::Index { collection, index } if self.infer_type(collection) == Type::Tensor => {
+                let handle = self.compile_tensor(collection)?;
+                let position = self.compile_expression(index)?;
+                Ok(self
+                    .new_tensor("englang_tensor_index", &[handle.into(), position.into()])?
+                    .into())
             }
 
             Expr::BinaryOp { op, left, right }
@@ -8482,8 +8792,11 @@ impl<'ctx> CodeGen<'ctx> {
 
                 let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = Vec::new();
                 for (i, arg) in arguments.iter().enumerate() {
-                    if param_types.get(i) == Some(&Type::Watched) {
-                        args.push(self.compile_watched(arg)?.into());
+                    if let Some(typ) = param_types.get(i)
+                        && is_managed(typ)
+                    {
+                        let typ = typ.clone();
+                        args.push(self.compile_managed(arg, &typ)?.into());
                         continue;
                     }
                     let compiled_arg = self.compile_expression(arg)?;
@@ -8521,7 +8834,7 @@ impl<'ctx> CodeGen<'ctx> {
 
                 // If the function returns void, return a dummy value
                 match call.try_as_basic_value() {
-                    ValueKind::Basic(val) => Ok(self.return_watched_result(name, val)),
+                    ValueKind::Basic(val) => Ok(self.track_managed_result(name, val)),
                     ValueKind::Instruction(_) => {
                         // Void return - return a dummy i64 0
                         Ok(self.context.i64_type().const_int(0, false).into())
@@ -8607,7 +8920,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .map_err(|e| e.to_string())?;
 
                 match call.try_as_basic_value() {
-                    ValueKind::Basic(val) => Ok(self.return_watched_result(&key, val)),
+                    ValueKind::Basic(val) => Ok(self.track_managed_result(&key, val)),
                     ValueKind::Instruction(_) => {
                         Ok(self.context.i64_type().const_int(0, false).into())
                     }
@@ -8925,7 +9238,7 @@ impl<'ctx> CodeGen<'ctx> {
                 .context
                 .ptr_type(inkwell::AddressSpace::default())
                 .into(),
-            Type::Watched => self
+            Type::Watched | Type::Tensor => self
                 .context
                 .ptr_type(inkwell::AddressSpace::default())
                 .into(),
@@ -8945,6 +9258,29 @@ impl<'ctx> CodeGen<'ctx> {
                 .get(name)
                 .map(|(_, t)| t.clone())
                 .unwrap_or(Type::Int),
+            Expr::BinaryOp { left, right, .. }
+                if self.infer_type(left) == Type::Tensor
+                    || self.infer_type(right) == Type::Tensor =>
+            {
+                Type::Tensor
+            }
+            Expr::UnaryOp {
+                op: UnaryOp::Negate,
+                operand,
+            } if self.infer_type(operand) == Type::Tensor => Type::Tensor,
+            Expr::FunctionCall { name, arguments } if self.tensor_call(name, arguments).is_some() => {
+                Type::Tensor
+            }
+            Expr::PropertyAccess { object, property } if self.infer_type(object) == Type::Tensor => {
+                match property.as_str() {
+                    "shape" => Type::List(Box::new(Type::Int)),
+                    "value" => Type::Float,
+                    _ => Type::Tensor,
+                }
+            }
+            Expr::Index { collection, .. } if self.infer_type(collection) == Type::Tensor => {
+                Type::Tensor
+            }
             Expr::BinaryOp { op, left, right }
                 if self.infer_type(left) == Type::Watched
                     || self.infer_type(right) == Type::Watched =>
@@ -8969,19 +9305,19 @@ impl<'ctx> CodeGen<'ctx> {
                 Type::Watched
             }
             Expr::FunctionCall { name, .. }
-                if self.signatures.get(name).map(|(_, ret)| ret) == Some(&Type::Watched) =>
+                if self.signatures.get(name).is_some_and(|(_, ret)| is_managed(ret)) =>
             {
-                Type::Watched
+                self.signatures[name].1.clone()
             }
             Expr::MethodCall { object, method, .. }
                 if self
                     .infer_class_name(object)
                     .ok()
                     .and_then(|class| self.signatures.get(&format!("{}.{}", class, method)))
-                    .map(|(_, ret)| ret)
-                    == Some(&Type::Watched) =>
+                    .is_some_and(|(_, ret)| is_managed(ret)) =>
             {
-                Type::Watched
+                let class = self.infer_class_name(object).unwrap();
+                self.signatures[&format!("{}.{}", class, method)].1.clone()
             }
             Expr::PropertyAccess { object, .. } if self.infer_type(object) == Type::Watched => {
                 Type::Float
@@ -9561,6 +9897,79 @@ show the graph of area."),
 │   └── w = 2.0   gradient 4.0
 └── 1.0
 "
+        );
+    }
+
+    #[test]
+    fn two_layer_forward_pass_needs_no_sizes() {
+        assert_eq!(
+            run("let inputs be a tensor with value [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]].
+let weights1 be a tensor with value [[1.0, 0.0, negative 1.0], [0.0, 1.0, 1.0]].
+let biases1 be a tensor with value [0.0, 0.0, negative 2.0].
+let weights2 be a tensor with value [[1.0], [1.0], [1.0]].
+let hidden be a tensor with value the result of relu with (the result of matmul with inputs and weights1) + biases1.
+let predictions be a tensor with value (the result of matmul with hidden and weights2) + 0.5.
+output hidden.
+output predictions.
+output the mean of predictions."),
+            "[ 1.0  2.0  0.0 ]
+[ 3.0  4.0  0.0 ]
+[ 5.0  6.0  0.0 ]
+[  3.5 ]
+[  7.5 ]
+[ 11.5 ]
+7.5
+"
+        );
+    }
+
+    #[test]
+    fn tensor_shapes_and_reductions() {
+        assert_eq!(
+            run("let grid be a tensor with value [[1, 2, 3], [4, 5, 6]].
+output the transpose of grid.
+output the result of sumAlong with grid and 0.
+output the result of meanAlong with grid and 1.
+output grid[1].
+let corner be a tensor with value grid[1][2].
+output the value of corner.
+let sizes be a list of standard number with value the shape of grid.
+output sizes[1].
+output the result of reshape with grid and 3 and 2.
+Multiply grid by 10.
+output the sum of grid.
+output the result of zeroTensor with 2 and 2."),
+            "[ 1.0  4.0 ]
+[ 2.0  5.0 ]
+[ 3.0  6.0 ]
+[ 5.0  7.0  9.0 ]
+[ 2.0  5.0 ]
+[ 4.0  5.0  6.0 ]
+6.0
+3
+[ 1.0  2.0 ]
+[ 3.0  4.0 ]
+[ 5.0  6.0 ]
+210.0
+[ 0.0  0.0 ]
+[ 0.0  0.0 ]
+"
+        );
+    }
+
+    #[test]
+    fn tensors_pass_through_functions() {
+        assert_eq!(
+            run("To double with a tensor values returning a tensor:
+    let twice be a tensor with value values * 2.
+    Give back twice.
+End.
+let result be a tensor with value [1.0, 2.0].
+For each i from 1 to 3,
+    Set result to the result of double with result.
+End.
+output result."),
+            "[ 8.0  16.0 ]\n"
         );
     }
 }

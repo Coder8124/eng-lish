@@ -80,8 +80,13 @@ pub enum SemanticError {
     )]
     NoWatchedProperty(String, usize),
 
-    #[error("Line {1}: Watched decimals can't go inside {0} yet. Use separate watched decimals instead.")]
-    WatchedNotAllowed(String, usize),
+    #[error("Line {2}: A {0} can't go inside {1} yet. Keep each one in its own variable instead.")]
+    WatchedNotAllowed(Type, String, usize),
+
+    #[error(
+        "Line {1}: A tensor has a 'shape', 'sum', 'mean', 'transpose' and 'value', but not a '{0}'."
+    )]
+    NoTensorProperty(String, usize),
 }
 
 impl SemanticError {
@@ -409,8 +414,9 @@ impl SemanticAnalyzer {
 
         // Add own properties (may override parent's)
         for prop in &class.properties {
-            if prop.prop_type == Type::Watched {
+            if is_managed(&prop.prop_type) {
                 return Err(SemanticError::WatchedNotAllowed(
+                    prop.prop_type.clone(),
                     "kinds".to_string(),
                     self.current_line,
                 ));
@@ -840,7 +846,10 @@ impl SemanticAnalyzer {
                 let operand_type = self.analyze_expression(operand)?;
                 match op {
                     UnaryOp::Negate => {
-                        if matches!(operand_type, Type::Int | Type::Float | Type::Watched) {
+                        if matches!(
+                            operand_type,
+                            Type::Int | Type::Float | Type::Watched | Type::Tensor
+                        ) {
                             Ok(operand_type)
                         } else {
                             Err(SemanticError::TypeMismatch {
@@ -894,6 +903,7 @@ impl SemanticAnalyzer {
                 let idx_type = self.analyze_expression(index)?;
 
                 match coll_type {
+                    Type::Tensor if idx_type == Type::Int => Ok(Type::Tensor),
                     Type::List(inner) => {
                         if idx_type != Type::Int {
                             return Err(SemanticError::TypeMismatch {
@@ -962,6 +972,12 @@ impl SemanticAnalyzer {
                     });
                 }
                 Ok(Type::List(Box::new(elem_type)))
+            }
+
+            Expr::FunctionCall { name, arguments }
+                if self.is_tensor_call(name, arguments)? =>
+            {
+                self.check_tensor_call(name, arguments)
             }
 
             Expr::FunctionCall { name, arguments } => {
@@ -1137,6 +1153,17 @@ impl SemanticAnalyzer {
                 let object_type = self.analyze_expression(object)?;
                 let asks_for_gradient = property == "gradient" || property == "value";
                 let class_name = match &object_type {
+                    Type::Tensor => {
+                        return match property.as_str() {
+                            "shape" => Ok(Type::List(Box::new(Type::Int))),
+                            "value" => Ok(Type::Float),
+                            "sum" | "mean" | "transpose" => Ok(Type::Tensor),
+                            _ => Err(SemanticError::NoTensorProperty(
+                                property.clone(),
+                                self.current_line,
+                            )),
+                        };
+                    }
                     Type::Watched if asks_for_gradient => return Ok(Type::Float),
                     Type::Watched => {
                         return Err(SemanticError::NoWatchedProperty(
@@ -1190,6 +1217,22 @@ impl SemanticAnalyzer {
     ) -> Result<Type, SemanticError> {
         if *left == Type::Inferred || *right == Type::Inferred {
             return Ok(Type::Inferred);
+        }
+        if *left == Type::Tensor || *right == Type::Tensor {
+            let fits = |t: &Type| *t == Type::Tensor || becomes_tensor(t);
+            return match op {
+                BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
+                    if fits(left) && fits(right) =>
+                {
+                    Ok(Type::Tensor)
+                }
+                _ => Err(SemanticError::InvalidOperator {
+                    op: op.clone(),
+                    left: left.clone(),
+                    right: right.clone(),
+                    line: self.current_line,
+                }),
+            };
         }
         let numeric = |t: &Type| matches!(t, Type::Int | Type::Float | Type::Watched);
         if (*left == Type::Watched || *right == Type::Watched) && numeric(left) && numeric(right) {
@@ -1276,6 +1319,7 @@ impl SemanticAnalyzer {
             || *expected == Type::Inferred
             || *found == Type::Inferred
             || (*expected == Type::Watched && matches!(found, Type::Int | Type::Float))
+            || (*expected == Type::Tensor && becomes_tensor(found))
         {
             Ok(())
         } else if let (Type::Dict(ek, ev), Type::Dict(fk, fv)) = (expected, found) {
@@ -1290,6 +1334,63 @@ impl SemanticAnalyzer {
         }
     }
 
+    fn is_tensor_call(&mut self, name: &str, arguments: &[Expr]) -> Result<bool, SemanticError> {
+        let Some((_, tensor_only)) = stdlib::tensor_function(name) else {
+            return Ok(false);
+        };
+        if tensor_only {
+            return Ok(!self.functions.contains_key(name));
+        }
+        match arguments.first() {
+            Some(first) => Ok(self.analyze_expression(first)? == Type::Tensor),
+            None => Ok(false),
+        }
+    }
+
+    fn check_tensor_call(&mut self, name: &str, arguments: &[Expr]) -> Result<Type, SemanticError> {
+        use stdlib::TensorCall::*;
+        let (call, _) = stdlib::tensor_function(name).unwrap();
+        let (tensors, numbers, any_count) = match call {
+            Filled(_) => (0, 1, true),
+            Reshape => (1, 1, true),
+            Unary(_) => (1, 0, false),
+            Power | Along(_) => (1, 1, false),
+            Binary(_) => (2, 0, false),
+        };
+        let needed = tensors + numbers;
+        if arguments.len() < needed || (!any_count && arguments.len() > needed) {
+            return Err(SemanticError::ArgumentCountMismatch(
+                name.to_string(),
+                needed,
+                arguments.len(),
+                self.current_line,
+            ));
+        }
+        for (i, arg) in arguments.iter().enumerate() {
+            let found = self.analyze_expression(arg)?;
+            let expected = if i < tensors {
+                Type::Tensor
+            } else if call == Power {
+                Type::Float
+            } else {
+                Type::Int
+            };
+            let fits = match expected {
+                Type::Tensor => found == Type::Tensor || becomes_tensor(&found),
+                Type::Float => matches!(found, Type::Int | Type::Float),
+                _ => found == Type::Int,
+            };
+            if !fits && found != Type::Inferred {
+                return Err(SemanticError::TypeMismatch {
+                    expected,
+                    found,
+                    line: self.current_line,
+                });
+            }
+        }
+        Ok(Type::Tensor)
+    }
+
     fn check_not_losing_watch(
         &self,
         name: &str,
@@ -1298,18 +1399,28 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         if *value == Type::Watched && matches!(target, Type::Int | Type::Float) {
             Err(SemanticError::NeedsWatched(name.to_string(), self.current_line))
+        } else if *value == Type::Tensor && *target != Type::Tensor && *target != Type::Inferred {
+            Err(SemanticError::TypeMismatch {
+                expected: target.clone(),
+                found: Type::Tensor,
+                line: self.current_line,
+            })
         } else {
             Ok(())
         }
     }
 
     fn check_watched_placement(&self, typ: &Type) -> Result<(), SemanticError> {
-        let place = match typ {
-            Type::List(inner) | Type::Set(inner) if **inner == Type::Watched => "lists",
-            Type::Dict(_, inner) if **inner == Type::Watched => "dictionaries",
+        let place: (&str, &Box<Type>) = match typ {
+            Type::List(inner) | Type::Set(inner) if is_managed(inner) => ("lists", inner),
+            Type::Dict(_, inner) if is_managed(inner) => ("dictionaries", inner),
             _ => return Ok(()),
         };
-        Err(SemanticError::WatchedNotAllowed(place.to_string(), self.current_line))
+        Err(SemanticError::WatchedNotAllowed(
+            (**place.1).clone(),
+            place.0.to_string(),
+            self.current_line,
+        ))
     }
 
     fn expect_watched(&mut self, expr: &Expr, what: &str) -> Result<(), SemanticError> {
@@ -1356,6 +1467,7 @@ impl SemanticAnalyzer {
         let valid = matches!(
             (from, to),
             (Type::Watched, Type::Float)
+                | (Type::Tensor, Type::Float)
                 | (Type::Int, Type::Float)
                 | (Type::Int, Type::Text)
                 | (Type::Float, Type::Int)
@@ -1374,6 +1486,21 @@ impl SemanticAnalyzer {
                 line: self.current_line,
             })
         }
+    }
+}
+
+/// Watched decimals and tensors live in the runtime and are counted, so they
+/// can't yet be stored where codegen doesn't track them.
+pub fn is_managed(typ: &Type) -> bool {
+    matches!(typ, Type::Watched | Type::Tensor)
+}
+
+/// Numbers and (nested) lists of numbers turn into a tensor automatically.
+pub fn becomes_tensor(typ: &Type) -> bool {
+    match typ {
+        Type::Int | Type::Float => true,
+        Type::List(inner) => becomes_tensor(inner),
+        _ => false,
     }
 }
 
@@ -1467,10 +1594,38 @@ mod tests {
     #[test]
     fn watched_decimals_stay_out_of_lists_and_kinds() {
         let error = first_error("let ws be a list of watched decimal with value [1.0].");
-        assert!(matches!(error, SemanticError::WatchedNotAllowed(_, 1)));
+        assert!(matches!(error, SemanticError::WatchedNotAllowed(_, _, 1)));
         let error = first_error(
             "Define a kind called Counter with the following:\n    Property weight is a watched decimal.\nEnd kind.",
         );
-        assert!(matches!(error, SemanticError::WatchedNotAllowed(_, _)));
+        assert!(matches!(error, SemanticError::WatchedNotAllowed(_, _, _)));
+    }
+
+    #[test]
+    fn lists_and_numbers_become_tensors() {
+        let src = concat!(
+            "let inputs be a tensor with value [[0.0, 1.0], [1.0, 0.0]].\n",
+            "let weights be a tensor with value the result of randomTensor with 2 and 3.\n",
+            "let biases be a tensor with value [1, 2, 3].\n",
+            "let hidden be a tensor with value the result of relu with (the result of matmul with inputs and weights) + biases.\n",
+            "let scaled be a tensor with value hidden * 2 - 1.0.\n",
+            "let corner be a tensor with value scaled[0][1].\n",
+            "let total be a decimal with value the value of corner.\n",
+            "let rows be a list of standard number with value the shape of hidden.\n",
+            "let average be a tensor with value the mean of hidden.\n"
+        );
+        assert!(analyze(src).is_ok(), "{:?}", analyze(src));
+    }
+
+    #[test]
+    fn tensor_mistakes_are_caught_before_running() {
+        let error = first_error("let t be a tensor with value [1.0].\nlet x be a decimal with value t * 2.");
+        assert!(matches!(error, SemanticError::TypeMismatch { found: Type::Tensor, .. }));
+        let error = first_error("let t be a tensor with value [1.0].\noutput the size of t.");
+        assert!(matches!(error, SemanticError::NoTensorProperty(_, 2)));
+        let error = first_error("let t be a tensor with value [1.0].\noutput t is less than 2.");
+        assert!(matches!(error, SemanticError::InvalidOperator { .. }));
+        let error = first_error("let t be a tensor with value the result of zeroTensor with 2.5.");
+        assert!(matches!(error, SemanticError::TypeMismatch { expected: Type::Int, .. }));
     }
 }

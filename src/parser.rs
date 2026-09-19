@@ -1243,6 +1243,10 @@ impl Parser {
                 self.current += 2;
                 Ok(Type::Watched)
             }
+            Some(Token::Identifier(name)) if name == "tensor" => {
+                self.advance();
+                Ok(Type::Tensor)
+            }
             // Class type: identifier that's not a keyword
             Some(Token::Identifier(name)) => {
                 let class_name = name.clone();
@@ -1714,6 +1718,15 @@ mod tests {
         ));
         assert!(matches!(&program.statements[1], Statement::FindGradients(Expr::Identifier(n)) if n == "w"));
         assert!(matches!(&program.statements[2], Statement::ShowGraph(Expr::Identifier(n)) if n == "w"));
+    }
+
+    #[test]
+    fn parses_tensor_type() {
+        let program = Parser::parse("let t be a tensor with value [[1.0, 2.0]].").unwrap();
+        assert!(matches!(
+            &program.statements[0],
+            Statement::VariableDecl { var_type: Type::Tensor, .. }
+        ));
     }
 
     #[test]

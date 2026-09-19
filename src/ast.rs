@@ -14,6 +14,7 @@ pub enum Type {
     Void,                       // for functions that don't return
     Class(String),              // user-defined class type
     Watched,                    // watched decimal: a decimal that remembers how it was made
+    Tensor,                     // a grid of decimals with any number of dimensions
     Inferred,                   // type to be inferred during semantic analysis
 }
 
@@ -89,6 +90,7 @@ impl std::fmt::Display for Type {
             Type::Void => write!(f, "nothing"),
             Type::Class(name) => write!(f, "{}", name),
             Type::Watched => write!(f, "watched decimal"),
+            Type::Tensor => write!(f, "tensor"),
             Type::Inferred => write!(f, "unknown"),
         }
     }
