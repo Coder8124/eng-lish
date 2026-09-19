@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-18
 **Branch:** ml-education
-**Status:** Phases 0 and 1 implemented (`runtime/`, `build.rs`, `src/link.rs`, `runtime/src/watched.rs`); Phases 2–6 not started.
+**Status:** Phases 0–2 implemented (`runtime/`, `build.rs`, `src/link.rs`, `runtime/src/watched.rs`, `runtime/src/tensor.rs`); Phases 3–6 not started.
 
 ## Goal
 
@@ -100,14 +100,23 @@ show the graph of loss.
 - Storing a watched result in a plain `decimal` is a compile error that tells the student to make it watched; asking for the gradient of a plain decimal explains that only watched decimals have one. Watched decimals can't go in lists, dictionaries or kinds yet; that needs element retain/release and waits for tensors.
 - **Done:** `examples/gradient_descent.eng` fits `y = 2x + 1` by hand-written gradient descent on watched decimals, and every runtime backward rule is checked against finite differences.
 
-### Phase 2: Tensors
+### Phase 2: Tensors (implemented)
 
-A new `tensor` type backed by a reference-counted runtime `Tensor` (shape, strides, data).
+A new `tensor` type backed by a reference-counted runtime `Tensor` (shape and contiguous data).
 
-- Constructors: `zeros`, `ones`, random normal, from a list of lists.
-- Operations: element-wise arithmetic with broadcasting, matrix product, transpose, sum/mean along an axis, activations.
-- Shape errors in plain English, e.g. *"You tried to multiply a 3-by-2 tensor by a 4-by-1 tensor. The 2 and the 4 need to match."*
-- **Done when:** a student can write a forward pass for a two-layer network without passing any sizes by hand.
+```
+let inputs be a tensor with value [[0.0, 1.0], [1.0, 0.0]].
+let weights be a tensor with value the result of randomTensor with 2 and 3.
+let hidden be a tensor with value the result of relu with (the result of matmul with inputs and weights) + [0.5, 0.0, 0.1].
+```
+
+- Lists (nested to any depth, of decimals or whole numbers) and plain numbers convert to a tensor wherever one is expected, so there is no separate "from list" call.
+- Constructors are `zeroTensor`, `oneTensor` and `randomTensor`, because `zeros` and `ones` already name list built-ins. `randomTensor` is standard normal from a fixed seed, so every student sees the same numbers.
+- Element-wise `+ - * /` with NumPy-style broadcasting; `matmul` for 1-D and 2-D; `transpose`, `reshape`, `sumAlong`, `meanAlong`, `the sum of`, `the mean of`; `sigmoid`, `relu`, `tanh`, `exponential`, `logarithm`, `softmax` and `power` overload on a tensor first argument; `t[i]` drops the first dimension.
+- Data is always contiguous: transpose and indexing copy rather than keep strides. Teaching-size tensors don't need views, and copying keeps Phase 3's backward rules simple.
+- Shape errors come from the runtime in plain English and teach the rule, e.g. *"You tried to matmul a 3-by-2 tensor by a 4-by-1 tensor. The 2 and the 4 need to match: each row of the first is multiplied by each column of the second, so they need the same length."*
+- Codegen's retain/release machinery from Phase 1 now covers any runtime-managed type (watched decimals and tensors), and top-level variables are released when `main` returns.
+- **Done:** `examples/forward_pass.eng` runs a two-layer forward pass without passing any sizes by hand.
 
 ### Phase 3: Tensor autograd
 
