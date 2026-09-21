@@ -320,6 +320,12 @@ impl Parser {
             Some(Token::Set) => self.parse_set_statement(),
             Some(Token::Remove) => self.parse_remove_statement(),
             Some(Token::Plot) => self.parse_plot(),
+            Some(Token::Identifier(_)) if self.starts_phrase("find", &["gradients", "gradient"]) => {
+                self.parse_phrase_statement(Statement::FindGradients)
+            }
+            Some(Token::Identifier(_)) if self.starts_phrase("show", &["graph"]) => {
+                self.parse_phrase_statement(Statement::ShowGraph)
+            }
             Some(Token::Identifier(_)) => self.parse_assignment_or_expr(),
             _ => Err(ParseError::InvalidStatement(
                 self.current_line(),
@@ -398,6 +404,32 @@ impl Parser {
             var_type,
             value,
         })
+    }
+
+    fn word_at(&self, offset: usize, words: &[&str]) -> bool {
+        matches!(
+            self.tokens.get(self.current + offset).map(|t| &t.token),
+            Some(Token::Identifier(word)) if words.iter().any(|w| word.eq_ignore_ascii_case(w))
+        )
+    }
+
+    /// Matches "<verb> the <noun> of", e.g. "Find the gradients of".
+    fn starts_phrase(&self, verb: &str, nouns: &[&str]) -> bool {
+        self.word_at(0, &[verb])
+            && self.tokens.get(self.current + 1).map(|t| &t.token) == Some(&Token::The)
+            && self.word_at(2, nouns)
+            && self.tokens.get(self.current + 3).map(|t| &t.token) == Some(&Token::Of)
+    }
+
+    /// Parse: Find the gradients of loss.  /  show the graph of loss.
+    fn parse_phrase_statement(
+        &mut self,
+        make: fn(Expr) -> Statement,
+    ) -> Result<Statement, ParseError> {
+        self.current += 4;
+        let expr = self.parse_expression()?;
+        self.expect(Token::Period)?;
+        Ok(make(expr))
     }
 
     /// Parse: output "Hello World".
@@ -1203,6 +1235,18 @@ impl Parser {
                     Ok(Type::Set(Box::new(Type::Int)))
                 }
             }
+            Some(Token::Identifier(name))
+                if name.eq_ignore_ascii_case("watched")
+                    && self.tokens.get(self.current + 1).map(|t| &t.token)
+                        == Some(&Token::TypeFloat) =>
+            {
+                self.current += 2;
+                Ok(Type::Watched)
+            }
+            Some(Token::Identifier(name)) if name == "tensor" => {
+                self.advance();
+                Ok(Type::Tensor)
+            }
             // Class type: identifier that's not a keyword
             Some(Token::Identifier(name)) => {
                 let class_name = name.clone();
@@ -1661,6 +1705,35 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_watched_decimals_and_gradient_statements() {
+        let program = Parser::parse(
+            "let w be a watched decimal with value 0.5.\nFind the gradients of w.\nshow the graph of w.",
+        )
+        .unwrap();
+        assert!(matches!(
+            &program.statements[0],
+            Statement::VariableDecl { var_type: Type::Watched, .. }
+        ));
+        assert!(matches!(&program.statements[1], Statement::FindGradients(Expr::Identifier(n)) if n == "w"));
+        assert!(matches!(&program.statements[2], Statement::ShowGraph(Expr::Identifier(n)) if n == "w"));
+    }
+
+    #[test]
+    fn parses_tensor_type() {
+        let program = Parser::parse("let t be a tensor with value [[1.0, 2.0]].").unwrap();
+        assert!(matches!(
+            &program.statements[0],
+            Statement::VariableDecl { var_type: Type::Tensor, .. }
+        ));
+    }
+
+    #[test]
+    fn find_and_show_stay_ordinary_names() {
+        let program = Parser::parse("let find be a standard number with value 1.\noutput find.").unwrap();
+        assert_eq!(program.statements.len(), 2);
+    }
 
     #[test]
     fn test_parse_variable_decl() {

@@ -25,6 +25,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "englang-runtime"
+version = "0.1.0"
+
+[[package]]
 name = "english"
 version = "0.1.0"
 dependencies = [

@@ -232,6 +232,9 @@ impl Emitter {
             Statement::Plot { .. } => {
                 self.error("'plot' isn't supported on calculators yet.");
             }
+            Statement::FindGradients(_) | Statement::ShowGraph(_) => {
+                self.error("Watched decimals and gradients aren't supported on calculators yet.");
+            }
         }
     }
 

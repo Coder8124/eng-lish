@@ -44,3 +44,6 @@ playground/target/
 
 # macOS
 .DS_Store
+
+# Personal dev journal — not for the repo
+DEVLOG.md

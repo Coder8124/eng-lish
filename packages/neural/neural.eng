@@ -32,3 +32,155 @@ To updateWeights with a list of decimal weights and a list of decimal gradients 
     let scaled be a list of decimal with value the result of scaleVector with gradients and learningRate.
     Give back the result of subtractVectors with weights and scaled.
 End.
+
+To elementwiseMultiply with a list of decimal vecA and a list of decimal vecB and a standard number n returning a list of decimal:
+    let result be a list of decimal with value the result of zeros with n.
+    For each i from 0 to n - 1,
+        let av be a decimal with value vecA[i].
+        let bv be a decimal with value vecB[i].
+        Set result[i] to av * bv.
+    End.
+    Give back result.
+End.
+
+To outerProduct with a list of decimal vecA and a list of decimal vecB and a standard number sizeA and a standard number sizeB returning a list of decimal:
+    let total be a standard number with value sizeA * sizeB.
+    let result be a list of decimal with value the result of zeros with total.
+    For each i from 0 to sizeA - 1,
+        let av be a decimal with value vecA[i].
+        For each j from 0 to sizeB - 1,
+            let bv be a decimal with value vecB[j].
+            let idx be a standard number with value i * sizeB + j.
+            Set result[idx] to av * bv.
+        End.
+    End.
+    Give back result.
+End.
+
+To matTransposeVecMul with a list of decimal matrix and a list of decimal vec and a standard number rows and a standard number cols returning a list of decimal:
+    let result be a list of decimal with value the result of zeros with cols.
+    For each j from 0 to cols - 1,
+        let acc be a decimal with value 0.0.
+        For each i from 0 to rows - 1,
+            let mv be a decimal with value matrix[i * cols + j].
+            let vv be a decimal with value vec[i].
+            Add mv * vv to acc.
+        End.
+        Set result[j] to acc.
+    End.
+    Give back result.
+End.
+
+To sigmoidDerivativeFromOutput with a list of decimal vec and a standard number n returning a list of decimal:
+    let result be a list of decimal with value the result of zeros with n.
+    For each i from 0 to n - 1,
+        let vi be a decimal with value vec[i].
+        Set result[i] to vi * (1.0 - vi).
+    End.
+    Give back result.
+End.
+
+To reluDerivativeFromZ with a list of decimal vec and a standard number n returning a list of decimal:
+    let result be a list of decimal with value the result of zeros with n.
+    For each i from 0 to n - 1,
+        let vi be a decimal with value vec[i].
+        If vi is greater than 0.0 then
+            Set result[i] to 1.0.
+        otherwise
+            Set result[i] to 0.0.
+        End.
+    End.
+    Give back result.
+End.
+
+To applyActivation with a list of decimal vec and a text kind returning a list of decimal:
+    If kind is equal to "relu" then
+        Give back the result of reluActivation with vec.
+    otherwise if kind is equal to "sigmoid" then
+        Give back the result of sigmoidActivation with vec.
+    otherwise if kind is equal to "softmax" then
+        Give back the result of softmaxActivation with vec.
+    otherwise
+        Give back vec.
+    End.
+End.
+
+To activationDerivative with a list of decimal preActivation and a list of decimal postActivation and a text kind and a standard number n returning a list of decimal:
+    If kind is equal to "relu" then
+        Give back the result of reluDerivativeFromZ with preActivation and n.
+    otherwise if kind is equal to "sigmoid" then
+        Give back the result of sigmoidDerivativeFromOutput with postActivation and n.
+    otherwise
+        Give back the result of zeros with n.
+    End.
+End.
+
+Define a kind called NeuralNetwork with the following:
+    Property inSize is a standard number.
+    Property hiddenSize is a standard number.
+    Property outSize is a standard number.
+    Property w1 is a list of decimal.
+    Property b1 is a list of decimal.
+    Property w2 is a list of decimal.
+    Property b2 is a list of decimal.
+    Property hiddenActivation is a text.
+    Property outputActivation is a text.
+    Property learningRate is a decimal.
+
+    To create with a standard number netInSize and a standard number netHiddenSize and a standard number netOutSize and a text hiddenAct and a text outputAct and a decimal rate:
+        Set inSize to netInSize.
+        Set hiddenSize to netHiddenSize.
+        Set outSize to netOutSize.
+        Set hiddenActivation to hiddenAct.
+        Set outputActivation to outputAct.
+        Set learningRate to rate.
+        Set w1 to the result of initWeights with netInSize and netHiddenSize.
+        Set b1 to the result of initBiases with netHiddenSize.
+        Set w2 to the result of initWeights with netHiddenSize and netOutSize.
+        Set b2 to the result of initBiases with netOutSize.
+    End create.
+
+    To predict with a list of decimal input returning a list of decimal:
+        let z1 be a list of decimal with value the result of linearLayer with w1 and b1 and input and hiddenSize and inSize.
+        let a1 be a list of decimal with value the result of applyActivation with z1 and hiddenActivation.
+        let z2 be a list of decimal with value the result of linearLayer with w2 and b2 and a1 and outSize and hiddenSize.
+        let a2 be a list of decimal with value the result of applyActivation with z2 and outputActivation.
+        Give back a2.
+    End.
+
+    To trainOnExample with a list of decimal input and a list of decimal target returning a decimal:
+        let z1 be a list of decimal with value the result of linearLayer with w1 and b1 and input and hiddenSize and inSize.
+        let a1 be a list of decimal with value the result of applyActivation with z1 and hiddenActivation.
+        let z2 be a list of decimal with value the result of linearLayer with w2 and b2 and a1 and outSize and hiddenSize.
+        let a2 be a list of decimal with value the result of applyActivation with z2 and outputActivation.
+        let loss be a decimal with value the result of mseError with a2 and target.
+
+        let dOut be a list of decimal with value the result of subtractVectors with a2 and target.
+        let outDeriv be a list of decimal with value the result of activationDerivative with z2 and a2 and outputActivation and outSize.
+        let dz2 be a list of decimal with value the result of elementwiseMultiply with dOut and outDeriv and outSize.
+
+        let gradW2 be a list of decimal with value the result of outerProduct with dz2 and a1 and outSize and hiddenSize.
+        Set w2 to the result of updateWeights with w2 and gradW2 and learningRate.
+        Set b2 to the result of updateWeights with b2 and dz2 and learningRate.
+
+        let da1 be a list of decimal with value the result of matTransposeVecMul with w2 and dz2 and outSize and hiddenSize.
+        let hiddenDeriv be a list of decimal with value the result of activationDerivative with z1 and a1 and hiddenActivation and hiddenSize.
+        let dz1 be a list of decimal with value the result of elementwiseMultiply with da1 and hiddenDeriv and hiddenSize.
+
+        let gradW1 be a list of decimal with value the result of outerProduct with dz1 and input and hiddenSize and inSize.
+        Set w1 to the result of updateWeights with w1 and gradW1 and learningRate.
+        Set b1 to the result of updateWeights with b1 and dz1 and learningRate.
+
+        Give back loss.
+    End.
+End kind.
+
+To trainNetwork with a NeuralNetwork net and a list of list of decimal inputs and a list of list of decimal targets and a standard number numExamples and a standard number epochs returning nothing:
+    For each epoch from 1 to epochs,
+        For each i from 0 to numExamples - 1,
+            let x be a list of decimal with value inputs[i].
+            let y be a list of decimal with value targets[i].
+            let loss be a decimal with value the result of asking net to trainOnExample with x and y.
+        End.
+    End.
+End.

@@ -79,3 +79,19 @@ If the remainder of n divided by 2 is equal to 0 then
     output "n is even".
 End.
 ```
+
+## How decimals are printed
+
+A decimal always prints with a decimal point, so `4.0` prints as `4.0`, not `4`. Decimals are rounded to 10 digits, so `0.1 + 0.2` prints as `0.3`.
+
+Very small and very big numbers still print as normal digits:
+
+```
+output 0.000001.
+```
+
+```
+0.000001
+```
+
+Only really huge or really tiny numbers use a short form. `1.0e20` means 1 with 20 zeros after it, and `2.5e-12` means 0.0000000000025.

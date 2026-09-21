@@ -12,7 +12,67 @@ use "neural".
 
 ---
 
-## Functions
+## The easy way: `NeuralNetwork`
+
+Most of the time you don't need any of the functions below — just use the `NeuralNetwork` class. It builds an input layer, one hidden layer, and an output layer, and knows how to train itself with backpropagation.
+
+```
+let net be a NeuralNetwork created with 2 and 4 and 1 and "relu" and "sigmoid" and 0.5.
+```
+
+Arguments: `inSize`, `hiddenSize`, `outSize`, `hiddenActivation` (`"relu"` or `"sigmoid"`), `outputActivation`, `learningRate`.
+
+### `predict`
+
+Runs one forward pass and returns the network's output.
+
+```
+the result of asking net to predict with input
+```
+
+### `trainOnExample`
+
+Trains the network on one input/target pair — one forward pass, one backward pass, one weight update. Returns the loss.
+
+```
+the result of asking net to trainOnExample with input and target
+```
+
+### `trainNetwork`
+
+A free function that loops `trainOnExample` over every example, for as many epochs as you ask for.
+
+```
+Call trainNetwork with net and inputs and targets and numExamples and epochs.
+```
+
+- `inputs` / `targets` — a `list of list of decimal`, one row per training example
+- `numExamples` — how many rows they have
+- `epochs` — how many times to practice on the whole set
+
+See `examples/neural_network_training.eng` for a full working example that trains a network to learn the AND gate.
+
+---
+
+## Backpropagation building blocks
+
+`NeuralNetwork` uses these under the hood. Reach for them directly only if you're writing your own training loop.
+
+| Function | What it does |
+|----------|-------------|
+| `elementwiseMultiply with vecA and vecB and n` | Multiplies two lists position by position |
+| `outerProduct with vecA and vecB and sizeA and sizeB` | Turns two lists into a weight-shaped gradient |
+| `matTransposeVecMul with matrix and vec and rows and cols` | Sends error backward through a layer's weights |
+| `sigmoidDerivativeFromOutput with vec and n` | The slope of sigmoid, from its output |
+| `reluDerivativeFromZ with vec and n` | The slope of relu, from its input |
+| `applyActivation with vec and kind` | Runs the activation named by `kind` (`"relu"`, `"sigmoid"`, `"softmax"`) |
+| `activationDerivative with preActivation and postActivation and kind and n` | Picks the right derivative function by name |
+
+---
+
+## Low-level functions
+
+These are the individual pieces a layer is made of — what `NeuralNetwork` calls internally.
 
 ### `initWeights`
 
@@ -87,7 +147,7 @@ updateWeights with weights and gradients and learningRate
 
 ---
 
-## Example: Simple 2-input, 4-hidden, 1-output network
+## Low-level example: manual forward pass, no training
 
 ```
 use "neural".

@@ -1,0 +1,36 @@
+Note: Teach the computer the rule behind some points.
+Note: The points follow y = 2 * x + 1, but the program doesn't know that.
+Note: It starts with a bad guess and fixes it a little at a time.
+
+let xs be a list of decimal with value [1.0, 2.0, 3.0, 4.0].
+let ys be a list of decimal with value [3.0, 5.0, 7.0, 9.0].
+
+let slope be a watched decimal with value 0.0.
+let start be a watched decimal with value 0.0.
+let stepSize be a decimal with value 0.01.
+
+For each round from 1 to 1000,
+    Note: Add up how wrong every guess is. Squaring keeps it positive.
+    let loss be a watched decimal with value 0.0.
+    For each i from 0 to 3,
+        let guess be a watched decimal with value slope * xs[i] + start.
+        let miss be a watched decimal with value guess - ys[i].
+        Add miss * miss to loss.
+    End.
+
+    Note: The gradient says which way makes the loss bigger,
+    Note: so step the other way.
+    Find the gradients of loss.
+    Subtract stepSize * the gradient of slope from slope.
+    Subtract stepSize * the gradient of start from start.
+
+    If the remainder of round divided by 200 is equal to 0,
+        output "Loss:".
+        output loss.
+    End.
+End.
+
+output "The slope it learned (should be close to 2):".
+output slope.
+output "The starting point it learned (should be close to 1):".
+output start.

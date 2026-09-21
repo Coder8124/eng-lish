@@ -1,4 +1,5 @@
 use crate::ast::*;
+use crate::semantic::is_managed;
 use crate::stdlib;
 use inkwell::OptimizationLevel;
 use inkwell::basic_block::BasicBlock;
@@ -44,6 +45,16 @@ pub struct CodeGen<'ctx> {
     loop_break_stack: Vec<BasicBlock<'ctx>>,
     /// Stack of continue targets (for nested loops)
     loop_continue_stack: Vec<BasicBlock<'ctx>>,
+    /// Parameter and return types of user functions, methods ("Kind.method")
+    /// and constructors ("Kind.create")
+    signatures: HashMap<String, (Vec<Type>, Type)>,
+    /// Return type of the function being compiled
+    current_return_type: Option<Type>,
+    /// Watched decimals and tensors made by the current statement, released
+    /// when it ends
+    managed_temps: Vec<(PointerValue<'ctx>, Type)>,
+    /// Variables in the current function holding a watched decimal or tensor
+    managed_slots: Vec<(PointerValue<'ctx>, Type)>,
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -70,6 +81,10 @@ impl<'ctx> CodeGen<'ctx> {
             builtin_metadata: HashMap::new(),
             loop_break_stack: Vec::new(),
             loop_continue_stack: Vec::new(),
+            signatures: HashMap::new(),
+            current_return_type: None,
+            managed_temps: Vec::new(),
+            managed_slots: Vec::new(),
         }
     }
 
@@ -86,6 +101,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.declare_printf();
         self.declare_malloc();
         self.declare_builtin_functions()?;
+        self.declare_watched_runtime();
         self.build_dict_builtins()?;
 
         // First pass: declare class struct types
@@ -786,6 +802,499 @@ impl<'ctx> CodeGen<'ctx> {
         self.malloc_fn = Some(self.module.add_function("malloc", malloc_type, None));
     }
 
+    // ========== Watched decimals ==========
+    // Each watched decimal is a reference-counted node in the runtime. A value
+    // made while compiling a statement is a temporary, released when the
+    // statement ends; storing it in a variable keeps its own reference.
+
+    fn declare_watched_runtime(&mut self) {
+        let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
+        let f64_type = self.context.f64_type();
+        let i32_type = self.context.i32_type();
+        let i64_type = self.context.i64_type();
+        let void = self.context.void_type();
+        let declarations = [
+            ("englang_watched_new", ptr.fn_type(&[f64_type.into(), ptr.into()], false)),
+            ("englang_watched_constant", ptr.fn_type(&[f64_type.into()], false)),
+            ("englang_watched_name", void.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_watched_retain", void.fn_type(&[ptr.into()], false)),
+            ("englang_watched_release", void.fn_type(&[ptr.into()], false)),
+            ("englang_watched_value", f64_type.fn_type(&[ptr.into()], false)),
+            ("englang_watched_gradient", f64_type.fn_type(&[ptr.into()], false)),
+            ("englang_watched_add", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_watched_subtract", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_watched_multiply", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_watched_divide", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_watched_negate", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_watched_power", ptr.fn_type(&[ptr.into(), f64_type.into()], false)),
+            ("englang_watched_sigmoid", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_watched_relu", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_watched_tanh", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_watched_exponential", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_watched_logarithm", ptr.fn_type(&[ptr.into()], false)),
+            (
+                "englang_watched_update",
+                ptr.fn_type(&[ptr.into(), i32_type.into(), f64_type.into()], false),
+            ),
+            ("englang_watched_backward", void.fn_type(&[ptr.into()], false)),
+            ("englang_watched_show", void.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_retain", void.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_release", void.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_scalar", ptr.fn_type(&[f64_type.into()], false)),
+            (
+                "englang_tensor_from_list",
+                ptr.fn_type(&[ptr.into(), i64_type.into(), i64_type.into()], false),
+            ),
+            (
+                "englang_tensor_filled",
+                ptr.fn_type(&[i64_type.into(), ptr.into(), i64_type.into()], false),
+            ),
+            (
+                "englang_tensor_reshape",
+                ptr.fn_type(&[ptr.into(), ptr.into(), i64_type.into()], false),
+            ),
+            ("englang_tensor_add", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_tensor_subtract", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_tensor_multiply", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_tensor_divide", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_tensor_matmul", ptr.fn_type(&[ptr.into(), ptr.into()], false)),
+            ("englang_tensor_negate", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_power", ptr.fn_type(&[ptr.into(), f64_type.into()], false)),
+            ("englang_tensor_sigmoid", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_relu", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_tanh", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_exponential", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_logarithm", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_softmax", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_transpose", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_sum", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_mean", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_sum_along", ptr.fn_type(&[ptr.into(), i64_type.into()], false)),
+            ("englang_tensor_mean_along", ptr.fn_type(&[ptr.into(), i64_type.into()], false)),
+            ("englang_tensor_shape", ptr.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_value", f64_type.fn_type(&[ptr.into()], false)),
+            ("englang_tensor_index", ptr.fn_type(&[ptr.into(), i64_type.into()], false)),
+            ("englang_tensor_print", void.fn_type(&[ptr.into()], false)),
+        ];
+        for (name, fn_type) in declarations {
+            self.module.add_function(name, fn_type, None);
+        }
+    }
+
+    fn call_runtime(
+        &self,
+        name: &str,
+        args: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
+    ) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+        let function = self
+            .module
+            .get_function(name)
+            .ok_or_else(|| format!("{} not declared", name))?;
+        let call = self
+            .builder
+            .build_call(function, args, "rt")
+            .map_err(|e| e.to_string())?;
+        Ok(match call.try_as_basic_value() {
+            ValueKind::Basic(value) => Some(value),
+            ValueKind::Instruction(_) => None,
+        })
+    }
+
+    fn new_managed(
+        &mut self,
+        name: &str,
+        args: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
+        typ: Type,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let handle = self
+            .call_runtime(name, args)?
+            .ok_or("runtime call returned nothing")?
+            .into_pointer_value();
+        self.managed_temps.push((handle, typ));
+        Ok(handle)
+    }
+
+    fn new_watched(
+        &mut self,
+        name: &str,
+        args: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
+    ) -> Result<PointerValue<'ctx>, String> {
+        self.new_managed(name, args, Type::Watched)
+    }
+
+    fn new_tensor(
+        &mut self,
+        name: &str,
+        args: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
+    ) -> Result<PointerValue<'ctx>, String> {
+        self.new_managed(name, args, Type::Tensor)
+    }
+
+    fn retain_managed(&self, handle: PointerValue<'ctx>, typ: &Type) -> Result<(), String> {
+        let name = if *typ == Type::Tensor {
+            "englang_tensor_retain"
+        } else {
+            "englang_watched_retain"
+        };
+        self.call_runtime(name, &[handle.into()])?;
+        Ok(())
+    }
+
+    fn release_managed(&self, handle: BasicValueEnum<'ctx>, typ: &Type) -> Result<(), String> {
+        let name = if *typ == Type::Tensor {
+            "englang_tensor_release"
+        } else {
+            "englang_watched_release"
+        };
+        self.call_runtime(name, &[handle.into()])?;
+        Ok(())
+    }
+
+    fn release_temps(&mut self, mark: usize) -> Result<(), String> {
+        for (handle, typ) in self.managed_temps.split_off(mark) {
+            self.release_managed(handle.into(), &typ)?;
+        }
+        Ok(())
+    }
+
+    fn release_slots(&mut self) -> Result<(), String> {
+        let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
+        for (slot, typ) in self.managed_slots.clone() {
+            let handle = self
+                .builder
+                .build_load(ptr, slot, "managed_old")
+                .map_err(|e| e.to_string())?;
+            self.release_managed(handle, &typ)?;
+        }
+        Ok(())
+    }
+
+    fn entry_alloca(
+        &self,
+        typ: BasicTypeEnum<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let entry = self
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent())
+            .and_then(|f| f.get_first_basic_block())
+            .ok_or("no function to hold a variable")?;
+        let entry_builder = self.context.create_builder();
+        match entry.get_first_instruction() {
+            Some(first) => entry_builder.position_before(&first),
+            None => entry_builder.position_at_end(entry),
+        }
+        let slot = entry_builder
+            .build_alloca(typ, name)
+            .map_err(|e| e.to_string())?;
+        if typ.is_pointer_type() {
+            entry_builder
+                .build_store(slot, typ.into_pointer_type().const_null())
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(slot)
+    }
+
+    // Slots live in the entry block and start empty, so a slot that is filled
+    // inside a loop can release what the previous pass stored there.
+    fn managed_slot(&mut self, name: &str, typ: &Type) -> Result<PointerValue<'ctx>, String> {
+        let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
+        let slot = self.entry_alloca(ptr.into(), name)?;
+        self.managed_slots.push((slot, typ.clone()));
+        Ok(slot)
+    }
+
+    fn store_managed(
+        &mut self,
+        slot: PointerValue<'ctx>,
+        handle: PointerValue<'ctx>,
+        typ: &Type,
+    ) -> Result<(), String> {
+        let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
+        self.retain_managed(handle, typ)?;
+        let old = self
+            .builder
+            .build_load(ptr, slot, "managed_old")
+            .map_err(|e| e.to_string())?;
+        self.release_managed(old, typ)?;
+        self.builder
+            .build_store(slot, handle)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn compile_number(&mut self, expr: &Expr) -> Result<inkwell::values::FloatValue<'ctx>, String> {
+        let value_fn = if self.infer_type(expr) == Type::Tensor {
+            "englang_tensor_value"
+        } else {
+            "englang_watched_value"
+        };
+        let value = self.compile_expression(expr)?;
+        match value {
+            BasicValueEnum::FloatValue(v) => Ok(v),
+            BasicValueEnum::IntValue(v) => self
+                .builder
+                .build_signed_int_to_float(v, self.context.f64_type(), "itof")
+                .map_err(|e| e.to_string()),
+            BasicValueEnum::PointerValue(p) => Ok(self
+                .call_runtime(value_fn, &[p.into()])?
+                .ok_or("value call returned nothing")?
+                .into_float_value()),
+            _ => Err("Expected a number".to_string()),
+        }
+    }
+
+    fn compile_watched(&mut self, expr: &Expr) -> Result<PointerValue<'ctx>, String> {
+        if self.infer_type(expr) == Type::Watched {
+            return Ok(self.compile_expression(expr)?.into_pointer_value());
+        }
+        let number = self.compile_number(expr)?;
+        self.new_watched("englang_watched_constant", &[number.into()])
+    }
+
+    fn compile_tensor(&mut self, expr: &Expr) -> Result<PointerValue<'ctx>, String> {
+        let mut typ = self.infer_type(expr);
+        if typ == Type::Tensor {
+            return Ok(self.compile_expression(expr)?.into_pointer_value());
+        }
+        if !matches!(typ, Type::List(_)) {
+            let number = self.compile_number(expr)?;
+            return self.new_tensor("englang_tensor_scalar", &[number.into()]);
+        }
+        let list = self.compile_expression(expr)?;
+        let mut depth = 0;
+        while let Type::List(inner) = typ {
+            depth += 1;
+            typ = *inner;
+        }
+        let i64_type = self.context.i64_type();
+        self.new_tensor(
+            "englang_tensor_from_list",
+            &[
+                list.into(),
+                i64_type.const_int(depth, false).into(),
+                i64_type.const_int((typ == Type::Int) as u64, false).into(),
+            ],
+        )
+    }
+
+    fn compile_managed(&mut self, expr: &Expr, typ: &Type) -> Result<PointerValue<'ctx>, String> {
+        if *typ == Type::Tensor {
+            self.compile_tensor(expr)
+        } else {
+            self.compile_watched(expr)
+        }
+    }
+
+    /// A watched decimal stored under `name`: plain numbers become a new
+    /// watched decimal with that name, and unnamed results take the name.
+    fn compile_named_watched(
+        &mut self,
+        expr: &Expr,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let label = self
+            .builder
+            .build_global_string_ptr(name, "watched_label")
+            .map_err(|e| e.to_string())?
+            .as_pointer_value();
+        if self.infer_type(expr) == Type::Watched {
+            let handle = self.compile_expression(expr)?.into_pointer_value();
+            self.call_runtime("englang_watched_name", &[handle.into(), label.into()])?;
+            return Ok(handle);
+        }
+        let number = self.compile_number(expr)?;
+        self.new_watched("englang_watched_new", &[number.into(), label.into()])
+    }
+
+    fn compile_stored(&mut self, expr: &Expr, name: &str, typ: &Type) -> Result<PointerValue<'ctx>, String> {
+        if *typ == Type::Watched {
+            self.compile_named_watched(expr, name)
+        } else {
+            self.compile_tensor(expr)
+        }
+    }
+
+    fn compile_watched_binary(
+        &mut self,
+        op: &BinaryOp,
+        left: &Expr,
+        right: &Expr,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let runtime_name = match op {
+            BinaryOp::Add => "englang_watched_add",
+            BinaryOp::Subtract => "englang_watched_subtract",
+            BinaryOp::Multiply => "englang_watched_multiply",
+            BinaryOp::Divide => "englang_watched_divide",
+            _ => {
+                let l = self.compile_number(left)?;
+                let r = self.compile_number(right)?;
+                return self.compile_binary_op(op, l.into(), r.into(), &Type::Bool);
+            }
+        };
+        let l = self.compile_watched(left)?;
+        let r = self.compile_watched(right)?;
+        Ok(self.new_watched(runtime_name, &[l.into(), r.into()])?.into())
+    }
+
+    fn compile_tensor_binary(
+        &mut self,
+        op: &BinaryOp,
+        left: &Expr,
+        right: &Expr,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let runtime_name = match op {
+            BinaryOp::Add => "englang_tensor_add",
+            BinaryOp::Subtract => "englang_tensor_subtract",
+            BinaryOp::Multiply => "englang_tensor_multiply",
+            _ => "englang_tensor_divide",
+        };
+        let l = self.compile_tensor(left)?;
+        let r = self.compile_tensor(right)?;
+        self.new_tensor(runtime_name, &[l.into(), r.into()])
+    }
+
+    fn tensor_call(&self, name: &str, arguments: &[Expr]) -> Option<stdlib::TensorCall> {
+        let (call, tensor_only) = stdlib::tensor_function(name)?;
+        let applies = if self.functions.contains_key(name) {
+            false
+        } else if tensor_only {
+            true
+        } else {
+            arguments
+                .first()
+                .is_some_and(|arg| self.infer_type(arg) == Type::Tensor)
+        };
+        applies.then_some(call)
+    }
+
+    fn compile_tensor_call(
+        &mut self,
+        call: stdlib::TensorCall,
+        arguments: &[Expr],
+    ) -> Result<PointerValue<'ctx>, String> {
+        use stdlib::TensorCall::*;
+        let i64_type = self.context.i64_type();
+        match call {
+            Filled(kind) => {
+                let (dims, count) = self.compile_sizes(arguments)?;
+                self.new_tensor(
+                    "englang_tensor_filled",
+                    &[i64_type.const_int(kind as u64, false).into(), dims.into(), count.into()],
+                )
+            }
+            Reshape => {
+                let tensor = self.compile_tensor(&arguments[0])?;
+                let (dims, count) = self.compile_sizes(&arguments[1..])?;
+                self.new_tensor(
+                    "englang_tensor_reshape",
+                    &[tensor.into(), dims.into(), count.into()],
+                )
+            }
+            Unary(runtime_name) => {
+                let tensor = self.compile_tensor(&arguments[0])?;
+                self.new_tensor(runtime_name, &[tensor.into()])
+            }
+            Power => {
+                let tensor = self.compile_tensor(&arguments[0])?;
+                let exponent = self.compile_number(&arguments[1])?;
+                self.new_tensor("englang_tensor_power", &[tensor.into(), exponent.into()])
+            }
+            Binary(runtime_name) => {
+                let left = self.compile_tensor(&arguments[0])?;
+                let right = self.compile_tensor(&arguments[1])?;
+                self.new_tensor(runtime_name, &[left.into(), right.into()])
+            }
+            Along(runtime_name) => {
+                let tensor = self.compile_tensor(&arguments[0])?;
+                let axis = self.compile_expression(&arguments[1])?;
+                self.new_tensor(runtime_name, &[tensor.into(), axis.into()])
+            }
+        }
+    }
+
+    /// Sizes go to the runtime as a pointer to an array of whole numbers and
+    /// how many there are.
+    fn compile_sizes(
+        &mut self,
+        sizes: &[Expr],
+    ) -> Result<(PointerValue<'ctx>, inkwell::values::IntValue<'ctx>), String> {
+        let i64_type = self.context.i64_type();
+        let array_type = i64_type.array_type(sizes.len() as u32);
+        let array = self.entry_alloca(array_type.into(), "sizes")?;
+        for (i, size) in sizes.iter().enumerate() {
+            let value = self.compile_expression(size)?;
+            let at = unsafe {
+                self.builder.build_in_bounds_gep(
+                    array_type,
+                    array,
+                    &[i64_type.const_zero(), i64_type.const_int(i as u64, false)],
+                    "size",
+                )
+            }
+            .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(at, value)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok((array, i64_type.const_int(sizes.len() as u64, false)))
+    }
+
+    fn compile_args(
+        &mut self,
+        arguments: &[Expr],
+        param_types: &[Type],
+        args: &mut Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>,
+    ) -> Result<(), String> {
+        for (i, arg) in arguments.iter().enumerate() {
+            match param_types.get(i) {
+                Some(typ) if is_managed(typ) => args.push(self.compile_managed(arg, typ)?.into()),
+                _ => args.push(self.compile_expression(arg)?.into()),
+            }
+        }
+        Ok(())
+    }
+
+    fn bind_param(
+        &mut self,
+        name: &str,
+        param_type: &Type,
+        value: BasicValueEnum<'ctx>,
+    ) -> Result<(), String> {
+        let slot = if is_managed(param_type) {
+            let slot = self.managed_slot(name, param_type)?;
+            self.store_managed(slot, value.into_pointer_value(), param_type)?;
+            slot
+        } else {
+            let alloca = self
+                .builder
+                .build_alloca(self.get_llvm_type(param_type), name)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_store(alloca, value)
+                .map_err(|e| e.to_string())?;
+            alloca
+        };
+        self.variables
+            .insert(name.to_string(), (slot, param_type.clone()));
+        Ok(())
+    }
+
+    fn track_managed_result(
+        &mut self,
+        key: &str,
+        value: BasicValueEnum<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        if let Some((_, ret)) = self.signatures.get(key)
+            && is_managed(ret)
+        {
+            let ret = ret.clone();
+            self.managed_temps.push((value.into_pointer_value(), ret));
+        }
+        value
+    }
+
     // ========== Builtin Standard Library ==========
 
     fn declare_builtin_functions(&mut self) -> Result<(), String> {
@@ -1186,113 +1695,11 @@ impl<'ctx> CodeGen<'ctx> {
             }
         }
 
-        // --- englang_print_float(val: f64) -> void ---
-        // Formats with %.10g, ensures at least one decimal place (e.g. 4 -> "4.0")
-        {
-            let printf = self.printf_fn.ok_or("printf not declared")?;
-
-            let snprintf_type =
-                i32_type.fn_type(&[ptr_type.into(), i64_type.into(), ptr_type.into()], true);
-            let c_snprintf = self.module.add_function("snprintf", snprintf_type, None);
-
-            let strchr_type = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
-            let c_strchr = self.module.add_function("strchr", strchr_type, None);
-
-            let void_type = self.context.void_type();
-            let fn_type = void_type.fn_type(&[f64_type.into()], false);
-            let func = self
-                .module
-                .add_function("englang_print_float", fn_type, None);
-
-            let entry = self.context.append_basic_block(func, "entry");
-            let has_dot_bb = self.context.append_basic_block(func, "has_dot");
-            let no_dot_bb = self.context.append_basic_block(func, "no_dot");
-
-            // entry:
-            self.builder.position_at_end(entry);
-            let val = func.get_nth_param(0).unwrap().into_float_value();
-
-            let buf_array_type = i8_type.array_type(64);
-            let buf = self
-                .builder
-                .build_alloca(buf_array_type, "buf")
-                .map_err(|e| e.to_string())?;
-
-            let gfmt = self
-                .builder
-                .build_global_string_ptr("%.10g", "gfmt")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_call(
-                    c_snprintf,
-                    &[
-                        buf.into(),
-                        i64_type.const_int(64, false).into(),
-                        gfmt.as_pointer_value().into(),
-                        val.into(),
-                    ],
-                    "snp",
-                )
-                .map_err(|e| e.to_string())?;
-
-            // strchr(buf, '.')
-            let dot_result = self
-                .builder
-                .build_call(
-                    c_strchr,
-                    &[buf.into(), i32_type.const_int(46, false).into()],
-                    "dot",
-                )
-                .map_err(|e| e.to_string())?
-                .try_as_basic_value();
-            let dot_ptr = match dot_result {
-                ValueKind::Basic(v) => v.into_pointer_value(),
-                _ => return Err("strchr returned void".to_string()),
-            };
-
-            let is_null = self
-                .builder
-                .build_int_compare(
-                    inkwell::IntPredicate::EQ,
-                    dot_ptr,
-                    ptr_type.const_null(),
-                    "is_null",
-                )
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_conditional_branch(is_null, no_dot_bb, has_dot_bb)
-                .map_err(|e| e.to_string())?;
-
-            // no_dot: printf("%s.0\n", buf)
-            self.builder.position_at_end(no_dot_bb);
-            let fmt_no_dot = self
-                .builder
-                .build_global_string_ptr("%s.0\n", "fmt_nodot")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_call(
-                    printf,
-                    &[fmt_no_dot.as_pointer_value().into(), buf.into()],
-                    "p_nodot",
-                )
-                .map_err(|e| e.to_string())?;
-            self.builder.build_return(None).map_err(|e| e.to_string())?;
-
-            // has_dot: printf("%s\n", buf)
-            self.builder.position_at_end(has_dot_bb);
-            let fmt_has_dot = self
-                .builder
-                .build_global_string_ptr("%s\n", "fmt_hasdot")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_call(
-                    printf,
-                    &[fmt_has_dot.as_pointer_value().into(), buf.into()],
-                    "p_hasdot",
-                )
-                .map_err(|e| e.to_string())?;
-            self.builder.build_return(None).map_err(|e| e.to_string())?;
-        }
+        self.module.add_function(
+            "englang_print_decimal",
+            self.context.void_type().fn_type(&[f64_type.into()], false),
+            None,
+        );
 
         // Declare additional C functions for I/O and utilities
         let scanf_type = i32_type.fn_type(&[ptr_type.into()], true); // varargs
@@ -1596,51 +2003,12 @@ impl<'ctx> CodeGen<'ctx> {
             }
         }
 
-        // --- decimalToText(f: f64) -> ptr ---
         {
-            let fn_type = ptr_type.fn_type(&[f64_type.into()], false);
-            let func = self
-                .module
-                .add_function("englang_decimalToText", fn_type, None);
-            let entry = self.context.append_basic_block(func, "entry");
-            self.builder.position_at_end(entry);
-
-            let f = func.get_nth_param(0).unwrap().into_float_value();
-
-            // Allocate buffer (64 bytes should be enough for most floats)
-            let buf_size = i64_type.const_int(64, false);
-            let buf_result = self
-                .builder
-                .build_call(malloc, &[buf_size.into()], "buf")
-                .map_err(|e| e.to_string())?
-                .try_as_basic_value();
-            let buf = match buf_result {
-                ValueKind::Basic(v) => v.into_pointer_value(),
-                _ => return Err("malloc returned void".to_string()),
-            };
-
-            // snprintf(buf, 64, "%.10g", f)
-            let fmt = self
-                .builder
-                .build_global_string_ptr("%.10g", "float_fmt")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_call(
-                    c_snprintf,
-                    &[
-                        buf.into(),
-                        buf_size.into(),
-                        fmt.as_pointer_value().into(),
-                        f.into(),
-                    ],
-                    "snprintf_result",
-                )
-                .map_err(|e| e.to_string())?;
-
-            self.builder
-                .build_return(Some(&buf))
-                .map_err(|e| e.to_string())?;
-
+            let func = self.module.add_function(
+                "englang_decimal_text",
+                ptr_type.fn_type(&[f64_type.into()], false),
+                None,
+            );
             for name in &["decimalToText", "floatToString"] {
                 self.builtin_functions.insert(name.to_string(), func);
                 self.builtin_return_types
@@ -4419,375 +4787,10 @@ impl<'ctx> CodeGen<'ctx> {
                 .insert("predictLinear".to_string(), Type::Float);
         }
 
-        // --- kMeans(data: ptr, k: i64) -> ptr (cluster assignments) ---
-        // Simplified 1D k-means clustering using Lloyd's algorithm
+        // --- kMeans(data: ptr, k: i64) -> ptr (cluster assignments), in the runtime crate ---
         {
             let fn_type = ptr_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
             let func = self.module.add_function("englang_kMeans", fn_type, None);
-            let entry = self.context.append_basic_block(func, "entry");
-            let init_loop_cond = self.context.append_basic_block(func, "init_loop_cond");
-            let init_loop_body = self.context.append_basic_block(func, "init_loop_body");
-            let init_loop_end = self.context.append_basic_block(func, "init_loop_end");
-            let iter_loop_cond = self.context.append_basic_block(func, "iter_loop_cond");
-            let iter_loop_body = self.context.append_basic_block(func, "iter_loop_body");
-            let iter_loop_end = self.context.append_basic_block(func, "iter_loop_end");
-            let assign_loop_cond = self.context.append_basic_block(func, "assign_loop_cond");
-            let assign_loop_body = self.context.append_basic_block(func, "assign_loop_body");
-            let assign_loop_end = self.context.append_basic_block(func, "assign_loop_end");
-            self.builder.position_at_end(entry);
-
-            let data = func.get_nth_param(0).unwrap().into_pointer_value();
-            let k = func.get_nth_param(1).unwrap().into_int_value();
-
-            // Get data length
-            let neg_16 = i64_type.const_int((-16i64) as u64, true);
-            let len_ptr = unsafe {
-                self.builder
-                    .build_gep(i8_type, data, &[neg_16], "len_ptr")
-                    .map_err(|e| e.to_string())?
-            };
-            let len_ptr = self
-                .builder
-                .build_pointer_cast(len_ptr, ptr_type, "len_ptr_typed")
-                .map_err(|e| e.to_string())?;
-            let n = self
-                .builder
-                .build_load(i64_type, len_ptr, "n")
-                .map_err(|e| e.to_string())?
-                .into_int_value();
-
-            // Allocate centroids array (k floats)
-            let k_times_8 = self
-                .builder
-                .build_int_mul(k, i64_type.const_int(8, false), "k_times_8")
-                .map_err(|e| e.to_string())?;
-            let centroids = self
-                .builder
-                .build_call(malloc, &[k_times_8.into()], "centroids")
-                .map_err(|e| e.to_string())?
-                .try_as_basic_value();
-            let centroids = match centroids {
-                ValueKind::Basic(v) => v.into_pointer_value(),
-                _ => return Err("malloc returned void".to_string()),
-            };
-
-            // Allocate assignments array (header + n ints)
-            let header_size = i64_type.const_int(16, false);
-            let n_times_8 = self
-                .builder
-                .build_int_mul(n, i64_type.const_int(8, false), "n_times_8")
-                .map_err(|e| e.to_string())?;
-            let assign_total = self
-                .builder
-                .build_int_add(header_size, n_times_8, "assign_total")
-                .map_err(|e| e.to_string())?;
-            let assign_base = self
-                .builder
-                .build_call(malloc, &[assign_total.into()], "assign_base")
-                .map_err(|e| e.to_string())?
-                .try_as_basic_value();
-            let assign_base = match assign_base {
-                ValueKind::Basic(v) => v.into_pointer_value(),
-                _ => return Err("malloc returned void".to_string()),
-            };
-
-            // Store length in assignments header
-            self.builder
-                .build_store(assign_base, n)
-                .map_err(|e| e.to_string())?;
-            let cap_ptr = unsafe {
-                self.builder
-                    .build_gep(
-                        i8_type,
-                        assign_base,
-                        &[i64_type.const_int(8, false)],
-                        "cap_ptr",
-                    )
-                    .map_err(|e| e.to_string())?
-            };
-            let cap_ptr = self
-                .builder
-                .build_pointer_cast(cap_ptr, ptr_type, "cap_ptr_typed")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(cap_ptr, n)
-                .map_err(|e| e.to_string())?;
-            let assignments = unsafe {
-                self.builder
-                    .build_gep(i8_type, assign_base, &[header_size], "assignments")
-                    .map_err(|e| e.to_string())?
-            };
-
-            // Initialize centroids with first k data points
-            let counter = self
-                .builder
-                .build_alloca(i64_type, "counter")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(counter, i64_type.const_int(0, false))
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_unconditional_branch(init_loop_cond)
-                .map_err(|e| e.to_string())?;
-
-            self.builder.position_at_end(init_loop_cond);
-            let i = self
-                .builder
-                .build_load(i64_type, counter, "i")
-                .map_err(|e| e.to_string())?
-                .into_int_value();
-            let cond = self
-                .builder
-                .build_int_compare(inkwell::IntPredicate::SLT, i, k, "cond")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_conditional_branch(cond, init_loop_body, init_loop_end)
-                .map_err(|e| e.to_string())?;
-
-            self.builder.position_at_end(init_loop_body);
-            let elem_size = i64_type.const_int(8, false);
-            let offset = self
-                .builder
-                .build_int_mul(i, elem_size, "offset")
-                .map_err(|e| e.to_string())?;
-            let data_ptr = unsafe {
-                self.builder
-                    .build_gep(i8_type, data, &[offset], "data_ptr")
-                    .map_err(|e| e.to_string())?
-            };
-            let data_ptr = self
-                .builder
-                .build_pointer_cast(data_ptr, ptr_type, "data_ptr_typed")
-                .map_err(|e| e.to_string())?;
-            let val = self
-                .builder
-                .build_load(f64_type, data_ptr, "val")
-                .map_err(|e| e.to_string())?;
-            let cent_ptr = unsafe {
-                self.builder
-                    .build_gep(i8_type, centroids, &[offset], "cent_ptr")
-                    .map_err(|e| e.to_string())?
-            };
-            let cent_ptr = self
-                .builder
-                .build_pointer_cast(cent_ptr, ptr_type, "cent_ptr_typed")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(cent_ptr, val)
-                .map_err(|e| e.to_string())?;
-            let next_i = self
-                .builder
-                .build_int_add(i, i64_type.const_int(1, false), "next_i")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(counter, next_i)
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_unconditional_branch(init_loop_cond)
-                .map_err(|e| e.to_string())?;
-
-            self.builder.position_at_end(init_loop_end);
-
-            // Main iteration loop (10 iterations for simplicity)
-            let iter_counter = self
-                .builder
-                .build_alloca(i64_type, "iter_counter")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(iter_counter, i64_type.const_int(0, false))
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_unconditional_branch(iter_loop_cond)
-                .map_err(|e| e.to_string())?;
-
-            self.builder.position_at_end(iter_loop_cond);
-            let iter = self
-                .builder
-                .build_load(i64_type, iter_counter, "iter")
-                .map_err(|e| e.to_string())?
-                .into_int_value();
-            let max_iter = i64_type.const_int(10, false);
-            let iter_cond = self
-                .builder
-                .build_int_compare(inkwell::IntPredicate::SLT, iter, max_iter, "iter_cond")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_conditional_branch(iter_cond, iter_loop_body, iter_loop_end)
-                .map_err(|e| e.to_string())?;
-
-            self.builder.position_at_end(iter_loop_body);
-
-            // Assignment step: assign each point to nearest centroid
-            self.builder
-                .build_store(counter, i64_type.const_int(0, false))
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_unconditional_branch(assign_loop_cond)
-                .map_err(|e| e.to_string())?;
-
-            self.builder.position_at_end(assign_loop_cond);
-            let ai = self
-                .builder
-                .build_load(i64_type, counter, "ai")
-                .map_err(|e| e.to_string())?
-                .into_int_value();
-            let acond = self
-                .builder
-                .build_int_compare(inkwell::IntPredicate::SLT, ai, n, "acond")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_conditional_branch(acond, assign_loop_body, assign_loop_end)
-                .map_err(|e| e.to_string())?;
-
-            self.builder.position_at_end(assign_loop_body);
-            // Get data point
-            let a_offset = self
-                .builder
-                .build_int_mul(ai, elem_size, "a_offset")
-                .map_err(|e| e.to_string())?;
-            let dp_ptr = unsafe {
-                self.builder
-                    .build_gep(i8_type, data, &[a_offset], "dp_ptr")
-                    .map_err(|e| e.to_string())?
-            };
-            let dp_ptr = self
-                .builder
-                .build_pointer_cast(dp_ptr, ptr_type, "dp_ptr_typed")
-                .map_err(|e| e.to_string())?;
-            let point = self
-                .builder
-                .build_load(f64_type, dp_ptr, "point")
-                .map_err(|e| e.to_string())?
-                .into_float_value();
-
-            // Find nearest centroid (simplified: just use centroid 0 or 1 based on distance)
-            // For simplicity, compare to first centroid
-            let c0_ptr = self
-                .builder
-                .build_pointer_cast(centroids, ptr_type, "c0_ptr")
-                .map_err(|e| e.to_string())?;
-            let c0 = self
-                .builder
-                .build_load(f64_type, c0_ptr, "c0")
-                .map_err(|e| e.to_string())?
-                .into_float_value();
-            let diff0 = self
-                .builder
-                .build_float_sub(point, c0, "diff0")
-                .map_err(|e| e.to_string())?;
-            let fabs = self
-                .module
-                .get_function("fabs")
-                .ok_or("fabs not declared")?;
-            let dist0 = self
-                .builder
-                .build_call(fabs, &[diff0.into()], "dist0")
-                .map_err(|e| e.to_string())?
-                .try_as_basic_value();
-            let dist0 = match dist0 {
-                ValueKind::Basic(v) => v.into_float_value(),
-                _ => return Err("fabs returned void".to_string()),
-            };
-
-            // Simple assignment: cluster 0 if closer to first centroid, else cluster (k-1)
-            let c_last_offset = self
-                .builder
-                .build_int_mul(
-                    self.builder
-                        .build_int_sub(k, i64_type.const_int(1, false), "k_minus_1")
-                        .map_err(|e| e.to_string())?,
-                    elem_size,
-                    "c_last_offset",
-                )
-                .map_err(|e| e.to_string())?;
-            let c_last_ptr = unsafe {
-                self.builder
-                    .build_gep(i8_type, centroids, &[c_last_offset], "c_last_ptr")
-                    .map_err(|e| e.to_string())?
-            };
-            let c_last_ptr = self
-                .builder
-                .build_pointer_cast(c_last_ptr, ptr_type, "c_last_ptr_typed")
-                .map_err(|e| e.to_string())?;
-            let c_last = self
-                .builder
-                .build_load(f64_type, c_last_ptr, "c_last")
-                .map_err(|e| e.to_string())?
-                .into_float_value();
-            let diff_last = self
-                .builder
-                .build_float_sub(point, c_last, "diff_last")
-                .map_err(|e| e.to_string())?;
-            let dist_last = self
-                .builder
-                .build_call(fabs, &[diff_last.into()], "dist_last")
-                .map_err(|e| e.to_string())?
-                .try_as_basic_value();
-            let dist_last = match dist_last {
-                ValueKind::Basic(v) => v.into_float_value(),
-                _ => return Err("fabs returned void".to_string()),
-            };
-
-            let is_closer_to_first = self
-                .builder
-                .build_float_compare(inkwell::FloatPredicate::OLT, dist0, dist_last, "is_closer")
-                .map_err(|e| e.to_string())?;
-            let cluster = self
-                .builder
-                .build_select(
-                    is_closer_to_first,
-                    i64_type.const_int(0, false),
-                    self.builder
-                        .build_int_sub(k, i64_type.const_int(1, false), "k_1")
-                        .map_err(|e| e.to_string())?,
-                    "cluster",
-                )
-                .map_err(|e| e.to_string())?;
-
-            // Store assignment
-            let assign_ptr = unsafe {
-                self.builder
-                    .build_gep(i8_type, assignments, &[a_offset], "assign_ptr")
-                    .map_err(|e| e.to_string())?
-            };
-            let assign_ptr = self
-                .builder
-                .build_pointer_cast(assign_ptr, ptr_type, "assign_ptr_typed")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(assign_ptr, cluster)
-                .map_err(|e| e.to_string())?;
-
-            let next_ai = self
-                .builder
-                .build_int_add(ai, i64_type.const_int(1, false), "next_ai")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(counter, next_ai)
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_unconditional_branch(assign_loop_cond)
-                .map_err(|e| e.to_string())?;
-
-            self.builder.position_at_end(assign_loop_end);
-            // Skip update step for simplicity (would need per-cluster sum/count)
-
-            let next_iter = self
-                .builder
-                .build_int_add(iter, i64_type.const_int(1, false), "next_iter")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(iter_counter, next_iter)
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_unconditional_branch(iter_loop_cond)
-                .map_err(|e| e.to_string())?;
-
-            self.builder.position_at_end(iter_loop_end);
-            self.builder
-                .build_return(Some(&assignments))
-                .map_err(|e| e.to_string())?;
-
             for name in &["kMeans", "cluster"] {
                 self.builtin_functions.insert(name.to_string(), func);
                 self.builtin_return_types
@@ -7294,6 +7297,13 @@ impl<'ctx> CodeGen<'ctx> {
 
         let fn_value = self.module.add_function(&func.name, fn_type, None);
         self.functions.insert(func.name.clone(), fn_value);
+        self.signatures.insert(
+            func.name.clone(),
+            (
+                func.parameters.iter().map(|p| p.param_type.clone()).collect(),
+                func.return_type.clone(),
+            ),
+        );
         Ok(())
     }
 
@@ -7308,19 +7318,13 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Save and clear current variables scope
         let saved_vars = std::mem::take(&mut self.variables);
+        let saved_slots = std::mem::take(&mut self.managed_slots);
+        let saved_return = self.current_return_type.replace(func.return_type.clone());
 
         // Bind parameters to allocas
         for (i, param) in func.parameters.iter().enumerate() {
             let param_val = fn_value.get_nth_param(i as u32).unwrap();
-            let alloca = self
-                .builder
-                .build_alloca(self.get_llvm_type(&param.param_type), &param.name)
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(alloca, param_val)
-                .map_err(|e| e.to_string())?;
-            self.variables
-                .insert(param.name.clone(), (alloca, param.param_type.clone()));
+            self.bind_param(&param.name, &param.param_type, param_val)?;
         }
 
         // Compile body
@@ -7338,12 +7342,15 @@ impl<'ctx> CodeGen<'ctx> {
                 .get_terminator()
                 .is_none()
             {
+                self.release_slots()?;
                 self.builder.build_return(None).map_err(|e| e.to_string())?;
             }
         }
 
         // Restore variables
         self.variables = saved_vars;
+        self.managed_slots = saved_slots;
+        self.current_return_type = saved_return;
         Ok(())
     }
 
@@ -7399,6 +7406,13 @@ impl<'ctx> CodeGen<'ctx> {
             && let Some(parent_methods) = self.class_methods.get(parent_name)
         {
             methods_map.extend(parent_methods.clone());
+            for method_name in parent_methods.keys() {
+                if let Some(sig) = self.signatures.get(&format!("{}.{}", parent_name, method_name)) {
+                    let sig = sig.clone();
+                    self.signatures
+                        .insert(format!("{}.{}", class.name, method_name), sig);
+                }
+            }
         }
 
         // Declare constructor
@@ -7412,6 +7426,13 @@ impl<'ctx> CodeGen<'ctx> {
             let ctor_name = format!("{}_create", class.name);
             let ctor_fn = self.module.add_function(&ctor_name, ctor_type, None);
             self.class_constructors.insert(class.name.clone(), ctor_fn);
+            self.signatures.insert(
+                format!("{}.create", class.name),
+                (
+                    constructor.parameters.iter().map(|p| p.param_type.clone()).collect(),
+                    Type::Void,
+                ),
+            );
         }
 
         // Declare methods
@@ -7432,6 +7453,13 @@ impl<'ctx> CodeGen<'ctx> {
             let method_name = format!("{}_{}", class.name, method.name);
             let method_fn = self.module.add_function(&method_name, fn_type, None);
             methods_map.insert(method.name.clone(), method_fn);
+            self.signatures.insert(
+                format!("{}.{}", class.name, method.name),
+                (
+                    method.parameters.iter().map(|p| p.param_type.clone()).collect(),
+                    method.return_type.clone(),
+                ),
+            );
         }
 
         self.class_methods.insert(class.name.clone(), methods_map);
@@ -7451,6 +7479,8 @@ impl<'ctx> CodeGen<'ctx> {
             let saved_vars = std::mem::take(&mut self.variables);
             let saved_self = self.current_self.take();
             let saved_class = self.current_class_name.take();
+            let saved_slots = std::mem::take(&mut self.managed_slots);
+            let saved_return = self.current_return_type.replace(Type::Void);
 
             let self_ptr = ctor_fn.get_nth_param(0).unwrap().into_pointer_value();
             self.current_self = Some(self_ptr);
@@ -7469,26 +7499,23 @@ impl<'ctx> CodeGen<'ctx> {
             // Bind constructor parameters
             for (i, param) in constructor.parameters.iter().enumerate() {
                 let param_val = ctor_fn.get_nth_param((i + 1) as u32).unwrap();
-                let alloca = self
-                    .builder
-                    .build_alloca(self.get_llvm_type(&param.param_type), &param.name)
-                    .map_err(|e| e.to_string())?;
-                self.builder
-                    .build_store(alloca, param_val)
-                    .map_err(|e| e.to_string())?;
-                self.variables
-                    .insert(param.name.clone(), (alloca, param.param_type.clone()));
+                self.bind_param(&param.name, &param.param_type, param_val)?;
             }
 
             for stmt in &constructor.body {
                 self.compile_statement(stmt)?;
             }
 
-            self.builder.build_return(None).map_err(|e| e.to_string())?;
+            if !self.current_block_has_terminator() {
+                self.release_slots()?;
+                self.builder.build_return(None).map_err(|e| e.to_string())?;
+            }
 
             self.variables = saved_vars;
             self.current_self = saved_self;
             self.current_class_name = saved_class;
+            self.managed_slots = saved_slots;
+            self.current_return_type = saved_return;
         }
 
         // Compile methods
@@ -7506,6 +7533,8 @@ impl<'ctx> CodeGen<'ctx> {
             let saved_vars = std::mem::take(&mut self.variables);
             let saved_self = self.current_self.take();
             let saved_class = self.current_class_name.take();
+            let saved_slots = std::mem::take(&mut self.managed_slots);
+            let saved_return = self.current_return_type.replace(method.return_type.clone());
 
             let self_ptr = method_fn.get_nth_param(0).unwrap().into_pointer_value();
             self.current_self = Some(self_ptr);
@@ -7524,15 +7553,7 @@ impl<'ctx> CodeGen<'ctx> {
             // Bind method parameters
             for (i, param) in method.parameters.iter().enumerate() {
                 let param_val = method_fn.get_nth_param((i + 1) as u32).unwrap();
-                let alloca = self
-                    .builder
-                    .build_alloca(self.get_llvm_type(&param.param_type), &param.name)
-                    .map_err(|e| e.to_string())?;
-                self.builder
-                    .build_store(alloca, param_val)
-                    .map_err(|e| e.to_string())?;
-                self.variables
-                    .insert(param.name.clone(), (alloca, param.param_type.clone()));
+                self.bind_param(&param.name, &param.param_type, param_val)?;
             }
 
             for stmt in &method.body {
@@ -7548,12 +7569,15 @@ impl<'ctx> CodeGen<'ctx> {
                     .get_terminator()
                     .is_none()
             {
+                self.release_slots()?;
                 self.builder.build_return(None).map_err(|e| e.to_string())?;
             }
 
             self.variables = saved_vars;
             self.current_self = saved_self;
             self.current_class_name = saved_class;
+            self.managed_slots = saved_slots;
+            self.current_return_type = saved_return;
         }
 
         Ok(())
@@ -7571,6 +7595,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.compile_statement(stmt)?;
         }
 
+        self.release_slots()?;
         self.builder
             .build_return(Some(&i32_type.const_int(0, false)))
             .map_err(|e| e.to_string())?;
@@ -7579,7 +7604,97 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     fn compile_statement(&mut self, stmt: &Statement) -> Result<(), String> {
+        let mark = self.managed_temps.len();
+        self.compile_statement_inner(stmt)?;
+        if self.current_block_has_terminator() {
+            self.managed_temps.truncate(mark);
+            Ok(())
+        } else {
+            self.release_temps(mark)
+        }
+    }
+
+    fn compile_statement_inner(&mut self, stmt: &Statement) -> Result<(), String> {
         match stmt {
+            Statement::VariableDecl {
+                name,
+                var_type,
+                value,
+            } if is_managed(var_type) => {
+                let slot = self.managed_slot(name, var_type)?;
+                let handle = self.compile_stored(value, name, var_type)?;
+                self.store_managed(slot, handle, var_type)?;
+                self.variables.insert(name.clone(), (slot, var_type.clone()));
+            }
+
+            Statement::Assignment { name, value }
+                if self.variables.get(name).is_some_and(|(_, t)| is_managed(t)) =>
+            {
+                let (slot, typ) = self.variables[name].clone();
+                let handle = self.compile_stored(value, name, &typ)?;
+                self.store_managed(slot, handle, &typ)?;
+            }
+
+            Statement::CompoundAssignment { name, op, value }
+                if self.variables.get(name).map(|(_, t)| t) == Some(&Type::Tensor) =>
+            {
+                let slot = self.variables[name].0;
+                let current = Expr::Identifier(name.clone());
+                let updated = self.compile_tensor_binary(op, &current, value)?;
+                self.store_managed(slot, updated, &Type::Tensor)?;
+            }
+
+            Statement::CompoundAssignment { name, op, value }
+                if self.variables.get(name).map(|(_, t)| t) == Some(&Type::Watched) =>
+            {
+                let slot = self.variables[name].0;
+                let ptr = self.context.ptr_type(inkwell::AddressSpace::default());
+                let current = self
+                    .builder
+                    .build_load(ptr, slot, name)
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value();
+                let updated = if self.infer_type(value) == Type::Watched {
+                    let current_expr = Expr::Identifier(name.clone());
+                    self.compile_watched_binary(op, &current_expr, value)?
+                        .into_pointer_value()
+                } else {
+                    let amount = self.compile_number(value)?;
+                    let code = match op {
+                        BinaryOp::Add => 0,
+                        BinaryOp::Subtract => 1,
+                        BinaryOp::Multiply => 2,
+                        _ => 3,
+                    };
+                    let code = self.context.i32_type().const_int(code, false);
+                    self.new_watched(
+                        "englang_watched_update",
+                        &[current.into(), code.into(), amount.into()],
+                    )?
+                };
+                self.store_managed(slot, updated, &Type::Watched)?;
+            }
+
+            Statement::Output(expr) if self.infer_type(expr) == Type::Tensor => {
+                let handle = self.compile_tensor(expr)?;
+                self.call_runtime("englang_tensor_print", &[handle.into()])?;
+            }
+
+            Statement::Output(expr) if self.infer_type(expr) == Type::Watched => {
+                let number = self.compile_number(expr)?;
+                self.emit_print(number.into(), expr)?;
+            }
+
+            Statement::FindGradients(expr) => {
+                let handle = self.compile_watched(expr)?;
+                self.call_runtime("englang_watched_backward", &[handle.into()])?;
+            }
+
+            Statement::ShowGraph(expr) => {
+                let handle = self.compile_watched(expr)?;
+                self.call_runtime("englang_watched_show", &[handle.into()])?;
+            }
+
             Statement::VariableDecl {
                 name,
                 var_type,
@@ -7631,11 +7746,13 @@ impl<'ctx> CodeGen<'ctx> {
                 else_ifs,
                 else_block,
             } => {
+                let mark = self.managed_temps.len();
                 let cond_value = self.compile_expression(condition)?;
                 let cond_bool = match cond_value {
                     BasicValueEnum::IntValue(v) => v,
                     _ => return Err("Condition must be boolean".to_string()),
                 };
+                self.release_temps(mark)?;
 
                 let function = self
                     .builder
@@ -7674,11 +7791,13 @@ impl<'ctx> CodeGen<'ctx> {
                 for (i, (elif_cond, elif_block)) in else_ifs.iter().enumerate() {
                     self.builder.position_at_end(next_bb);
 
+                    let mark = self.managed_temps.len();
                     let elif_cond_value = self.compile_expression(elif_cond)?;
                     let elif_cond_bool = match elif_cond_value {
                         BasicValueEnum::IntValue(v) => v,
                         _ => return Err("Condition must be boolean".to_string()),
                     };
+                    self.release_temps(mark)?;
 
                     let elif_then_bb = self.context.append_basic_block(function, "elif_then");
                     next_bb = if i + 1 < else_ifs.len() || else_block.is_some() {
@@ -7739,11 +7858,13 @@ impl<'ctx> CodeGen<'ctx> {
                     .map_err(|e| e.to_string())?;
 
                 self.builder.position_at_end(cond_bb);
+                let mark = self.managed_temps.len();
                 let cond_value = self.compile_expression(condition)?;
                 let cond_bool = match cond_value {
                     BasicValueEnum::IntValue(v) => v,
                     _ => return Err("Condition must be boolean".to_string()),
                 };
+                self.release_temps(mark)?;
                 self.builder
                     .build_conditional_branch(cond_bool, body_bb, after_bb)
                     .map_err(|e| e.to_string())?;
@@ -7779,8 +7900,10 @@ impl<'ctx> CodeGen<'ctx> {
                     .unwrap();
 
                 // Compile start and end values
+                let mark = self.managed_temps.len();
                 let start_val = self.compile_expression(start)?;
                 let end_val = self.compile_expression(end)?;
+                self.release_temps(mark)?;
 
                 let start_int = match start_val {
                     BasicValueEnum::IntValue(v) => v,
@@ -7986,14 +8109,26 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             Statement::Return(expr) => {
-                if let Some(return_expr) = expr {
-                    let val = self.compile_expression(return_expr)?;
-                    self.builder
-                        .build_return(Some(&val))
-                        .map_err(|e| e.to_string())?;
-                } else {
-                    self.builder.build_return(None).map_err(|e| e.to_string())?;
+                let mark = self.managed_temps.len();
+                let val = match expr {
+                    Some(return_expr)
+                        if self.current_return_type.as_ref().is_some_and(is_managed) =>
+                    {
+                        let typ = self.current_return_type.clone().unwrap();
+                        let handle = self.compile_managed(return_expr, &typ)?;
+                        self.retain_managed(handle, &typ)?;
+                        Some(BasicValueEnum::from(handle))
+                    }
+                    Some(return_expr) => Some(self.compile_expression(return_expr)?),
+                    None => None,
+                };
+                self.release_temps(mark)?;
+                self.release_slots()?;
+                match val {
+                    Some(val) => self.builder.build_return(Some(&val)),
+                    None => self.builder.build_return(None),
                 }
+                .map_err(|e| e.to_string())?;
             }
 
             Statement::PropertyAssignment {
@@ -8174,6 +8309,112 @@ impl<'ctx> CodeGen<'ctx> {
                     .builder
                     .build_load(llvm_type, ptr, name)
                     .map_err(|e| e.to_string())?)
+            }
+
+            Expr::BinaryOp { op, left, right }
+                if self.infer_type(left) == Type::Tensor
+                    || self.infer_type(right) == Type::Tensor =>
+            {
+                Ok(self.compile_tensor_binary(op, left, right)?.into())
+            }
+
+            Expr::UnaryOp {
+                op: UnaryOp::Negate,
+                operand,
+            } if self.infer_type(operand) == Type::Tensor => {
+                let handle = self.compile_tensor(operand)?;
+                Ok(self
+                    .new_tensor("englang_tensor_negate", &[handle.into()])?
+                    .into())
+            }
+
+            Expr::FunctionCall { name, arguments } if self.tensor_call(name, arguments).is_some() => {
+                let call = self.tensor_call(name, arguments).unwrap();
+                Ok(self.compile_tensor_call(call, arguments)?.into())
+            }
+
+            Expr::PropertyAccess { object, property }
+                if self.infer_type(object) == Type::Tensor =>
+            {
+                let handle = self.compile_expression(object)?;
+                match property.as_str() {
+                    "shape" => Ok(self
+                        .call_runtime("englang_tensor_shape", &[handle.into()])?
+                        .ok_or("englang_tensor_shape returned nothing")?),
+                    "value" => Ok(self
+                        .call_runtime("englang_tensor_value", &[handle.into()])?
+                        .ok_or("englang_tensor_value returned nothing")?),
+                    other => Ok(self
+                        .new_tensor(&format!("englang_tensor_{}", other), &[handle.into()])?
+                        .into()),
+                }
+            }
+
+            Expr::TypeConversion { target_type: Type::Float, expr }
+                if self.infer_type(expr) == Type::Tensor =>
+            {
+                Ok(self.compile_number(expr)?.into())
+            }
+
+            Expr::Index { collection, index } if self.infer_type(collection) == Type::Tensor => {
+                let handle = self.compile_tensor(collection)?;
+                let position = self.compile_expression(index)?;
+                Ok(self
+                    .new_tensor("englang_tensor_index", &[handle.into(), position.into()])?
+                    .into())
+            }
+
+            Expr::BinaryOp { op, left, right }
+                if self.infer_type(left) == Type::Watched
+                    || self.infer_type(right) == Type::Watched =>
+            {
+                self.compile_watched_binary(op, left, right)
+            }
+
+            Expr::TypeConversion { target_type: Type::Float, expr }
+                if self.infer_type(expr) == Type::Watched =>
+            {
+                Ok(self.compile_number(expr)?.into())
+            }
+
+            Expr::UnaryOp {
+                op: UnaryOp::Negate,
+                operand,
+            } if self.infer_type(operand) == Type::Watched => {
+                let handle = self.compile_watched(operand)?;
+                Ok(self
+                    .new_watched("englang_watched_negate", &[handle.into()])?
+                    .into())
+            }
+
+            Expr::FunctionCall { name, arguments }
+                if stdlib::watched_function(name).is_some()
+                    && !self.functions.contains_key(name)
+                    && arguments
+                        .first()
+                        .is_some_and(|arg| self.infer_type(arg) == Type::Watched) =>
+            {
+                let (runtime_name, _) = stdlib::watched_function(name).unwrap();
+                let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                    vec![self.compile_watched(&arguments[0])?.into()];
+                if let Some(exponent) = arguments.get(1) {
+                    args.push(self.compile_number(exponent)?.into());
+                }
+                Ok(self.new_watched(runtime_name, &args)?.into())
+            }
+
+            Expr::PropertyAccess { object, property }
+                if self.infer_type(object) == Type::Watched =>
+            {
+                let handle = self.compile_expression(object)?;
+                let runtime_name = if property == "gradient" {
+                    "englang_watched_gradient"
+                } else {
+                    "englang_watched_value"
+                };
+                Ok(self
+                    .call_runtime(runtime_name, &[handle.into()])?
+                    .ok_or("watched runtime call returned nothing")?)
             }
 
             Expr::BinaryOp { op, left, right } => {
@@ -8405,9 +8646,21 @@ impl<'ctx> CodeGen<'ctx> {
                 };
 
                 let builtin_meta = self.builtin_metadata.get(name).cloned();
+                let param_types = self
+                    .signatures
+                    .get(name)
+                    .map(|(params, _)| params.clone())
+                    .unwrap_or_default();
 
                 let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = Vec::new();
                 for (i, arg) in arguments.iter().enumerate() {
+                    if let Some(typ) = param_types.get(i)
+                        && is_managed(typ)
+                    {
+                        let typ = typ.clone();
+                        args.push(self.compile_managed(arg, &typ)?.into());
+                        continue;
+                    }
                     let compiled_arg = self.compile_expression(arg)?;
 
                     // Auto-promote Int to Float for builtin math functions
@@ -8424,6 +8677,15 @@ impl<'ctx> CodeGen<'ctx> {
                         continue;
                     }
 
+                    // englang_append/englang_push store every element as a raw
+                    // 8-byte word, so non-int values need bitcasting to i64 to
+                    // match that signature.
+                    if (name == "append" || name == "push") && i == 1 {
+                        let coerced = self.value_to_slot(compiled_arg)?;
+                        args.push(coerced.into());
+                        continue;
+                    }
+
                     args.push(compiled_arg.into());
                 }
 
@@ -8434,7 +8696,7 @@ impl<'ctx> CodeGen<'ctx> {
 
                 // If the function returns void, return a dummy value
                 match call.try_as_basic_value() {
-                    ValueKind::Basic(val) => Ok(val),
+                    ValueKind::Basic(val) => Ok(self.track_managed_result(name, val)),
                     ValueKind::Instruction(_) => {
                         // Void return - return a dummy i64 0
                         Ok(self.context.i64_type().const_int(0, false).into())
@@ -8470,9 +8732,12 @@ impl<'ctx> CodeGen<'ctx> {
                 if let Some(ctor_fn) = self.class_constructors.get(class_name).copied() {
                     let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
                         vec![heap_ptr.into()];
-                    for arg in arguments {
-                        args.push(self.compile_expression(arg)?.into());
-                    }
+                    let param_types = self
+                        .signatures
+                        .get(&format!("{}.create", class_name))
+                        .map(|(params, _)| params.clone())
+                        .unwrap_or_default();
+                    self.compile_args(arguments, &param_types, &mut args)?;
                     self.builder
                         .build_call(ctor_fn, &args, "ctor_call")
                         .map_err(|e| e.to_string())?;
@@ -8501,11 +8766,15 @@ impl<'ctx> CodeGen<'ctx> {
                     .and_then(|m| m.get(method))
                     .ok_or_else(|| format!("No method {} on {}", method, class_name))?;
 
+                let key = format!("{}.{}", class_name, method);
+                let param_types = self
+                    .signatures
+                    .get(&key)
+                    .map(|(params, _)| params.clone())
+                    .unwrap_or_default();
                 let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
                     vec![obj_ptr.into()];
-                for arg in arguments {
-                    args.push(self.compile_expression(arg)?.into());
-                }
+                self.compile_args(arguments, &param_types, &mut args)?;
 
                 let call = self
                     .builder
@@ -8513,7 +8782,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .map_err(|e| e.to_string())?;
 
                 match call.try_as_basic_value() {
-                    ValueKind::Basic(val) => Ok(val),
+                    ValueKind::Basic(val) => Ok(self.track_managed_result(&key, val)),
                     ValueKind::Instruction(_) => {
                         Ok(self.context.i64_type().const_int(0, false).into())
                     }
@@ -8764,8 +9033,8 @@ impl<'ctx> CodeGen<'ctx> {
         if let BasicValueEnum::FloatValue(fv) = value {
             let print_float = self
                 .module
-                .get_function("englang_print_float")
-                .ok_or("englang_print_float not declared")?;
+                .get_function("englang_print_decimal")
+                .ok_or("englang_print_decimal not declared")?;
             self.builder
                 .build_call(print_float, &[fv.into()], "pf")
                 .map_err(|e| e.to_string())?;
@@ -8831,6 +9100,10 @@ impl<'ctx> CodeGen<'ctx> {
                 .context
                 .ptr_type(inkwell::AddressSpace::default())
                 .into(),
+            Type::Watched | Type::Tensor => self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into(),
             Type::Void => self.context.i64_type().into(), // shouldn't be used as value type
             Type::Inferred => unreachable!("Type::Inferred should be resolved before codegen"),
         }
@@ -8847,6 +9120,71 @@ impl<'ctx> CodeGen<'ctx> {
                 .get(name)
                 .map(|(_, t)| t.clone())
                 .unwrap_or(Type::Int),
+            Expr::BinaryOp { left, right, .. }
+                if self.infer_type(left) == Type::Tensor
+                    || self.infer_type(right) == Type::Tensor =>
+            {
+                Type::Tensor
+            }
+            Expr::UnaryOp {
+                op: UnaryOp::Negate,
+                operand,
+            } if self.infer_type(operand) == Type::Tensor => Type::Tensor,
+            Expr::FunctionCall { name, arguments } if self.tensor_call(name, arguments).is_some() => {
+                Type::Tensor
+            }
+            Expr::PropertyAccess { object, property } if self.infer_type(object) == Type::Tensor => {
+                match property.as_str() {
+                    "shape" => Type::List(Box::new(Type::Int)),
+                    "value" => Type::Float,
+                    _ => Type::Tensor,
+                }
+            }
+            Expr::Index { collection, .. } if self.infer_type(collection) == Type::Tensor => {
+                Type::Tensor
+            }
+            Expr::BinaryOp { op, left, right }
+                if self.infer_type(left) == Type::Watched
+                    || self.infer_type(right) == Type::Watched =>
+            {
+                match op {
+                    BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
+                        Type::Watched
+                    }
+                    _ => Type::Bool,
+                }
+            }
+            Expr::UnaryOp {
+                op: UnaryOp::Negate,
+                operand,
+            } if self.infer_type(operand) == Type::Watched => Type::Watched,
+            Expr::FunctionCall { name, arguments }
+                if stdlib::watched_function(name).is_some()
+                    && !self.functions.contains_key(name)
+                    && arguments
+                        .first()
+                        .is_some_and(|arg| self.infer_type(arg) == Type::Watched) =>
+            {
+                Type::Watched
+            }
+            Expr::FunctionCall { name, .. }
+                if self.signatures.get(name).is_some_and(|(_, ret)| is_managed(ret)) =>
+            {
+                self.signatures[name].1.clone()
+            }
+            Expr::MethodCall { object, method, .. }
+                if self
+                    .infer_class_name(object)
+                    .ok()
+                    .and_then(|class| self.signatures.get(&format!("{}.{}", class, method)))
+                    .is_some_and(|(_, ret)| is_managed(ret)) =>
+            {
+                let class = self.infer_class_name(object).unwrap();
+                self.signatures[&format!("{}.{}", class, method)].1.clone()
+            }
+            Expr::PropertyAccess { object, .. } if self.infer_type(object) == Type::Watched => {
+                Type::Float
+            }
             Expr::BinaryOp { left, right, .. } => {
                 let left_type = self.infer_type(left);
                 let right_type = self.infer_type(right);
@@ -8989,9 +9327,7 @@ mod tests {
         let exe = dir.join("test");
 
         codegen.write_object_file(&obj).expect("write object file");
-        let link = Command::new("clang")
-            .args([obj.to_str().unwrap(), "-o", exe.to_str().unwrap(), "-lm"])
-            .status()
+        let link = crate::link::link(&obj, &exe)
             .expect("clang must be installed to run codegen tests");
         assert!(link.success(), "linking failed");
 
@@ -9308,6 +9644,19 @@ output more[3]."),
     }
 
     #[test]
+    fn append_is_generic_across_element_types() {
+        assert_eq!(
+            run("let nums be a list of decimal with value [1.0, 2.0].
+let more be a list of decimal with value the result of append with nums and 3.5.
+output more[2].
+let words be a list of text with value [\"hi\"].
+let words2 be a list of text with value the result of append with words and \"bye\".
+output words2[1]."),
+            "3.5\nbye\n"
+        );
+    }
+
+    #[test]
     fn dictionary_operations() {
         assert_eq!(
             run(r#"Let ages be a new dictionary.
@@ -9339,6 +9688,180 @@ output the result of contains with "haystack" and "stack"."#),
             run("output the result of squareRoot with 16.
 output the result of absoluteValue with negative 3."),
             "4.0\n3.0\n"
+        );
+    }
+
+    #[test]
+    fn kmeans_links_against_the_runtime() {
+        assert_eq!(
+            run("let data be a list of decimal with value [1.0, 1.5, 2.0, 8.0, 8.5, 9.0].
+let groups be a list of standard number with value the result of kMeans with data and 2.
+For each i from 0 to 5,
+    output groups[i].
+End."),
+            "0\n0\n0\n1\n1\n1\n"
+        );
+    }
+
+    #[test]
+    fn gradients_follow_the_chain_rule() {
+        assert_eq!(
+            run("let w be a watched decimal with value 0.5.
+let loss be a watched decimal with value (w * 3.0 - 6.0) * (w * 3.0 - 6.0).
+Find the gradients of loss.
+output loss.
+output the gradient of w.
+let squashed be a watched decimal with value the result of sigmoid with (w - 0.5).
+Find the gradients of squashed.
+output the gradient of w.
+let cubed be a watched decimal with value the result of power with w and 3.
+Find the gradients of cubed.
+output the gradient of w."),
+            "20.25\n-27.0\n0.25\n0.75\n"
+        );
+    }
+
+    #[test]
+    fn gradient_descent_fits_a_line() {
+        assert_eq!(
+            run("To squaredMiss with a watched decimal guess and a decimal target returning a watched decimal:
+    let miss be a watched decimal with value guess - target.
+    Give back miss * miss.
+End.
+let xs be a list of decimal with value [1.0, 2.0, 3.0].
+let ys be a list of decimal with value [3.0, 5.0, 7.0].
+let weight be a watched decimal with value 0.0.
+let bias be a watched decimal with value 0.0.
+For each step from 1 to 2000,
+    let loss be a watched decimal with value 0.0.
+    For each i from 0 to 2,
+        Add the result of squaredMiss with weight * xs[i] + bias and ys[i] to loss.
+    End.
+    Find the gradients of loss.
+    Subtract 0.02 * the gradient of weight from weight.
+    Subtract 0.02 * the gradient of bias from bias.
+End.
+output standard number of (the value of weight * 100.0 + 0.5).
+output standard number of (the value of bias * 100.0 + 0.5)."),
+            "200\n100\n"
+        );
+    }
+
+    #[test]
+    fn show_the_graph_prints_each_step() {
+        assert_eq!(
+            run("let w be a watched decimal with value 2.0.
+let area be a watched decimal with value w * w + 1.0.
+Find the gradients of area.
+show the graph of area."),
+            "area = 5.0  (plus)   gradient 1.0
+├── times = 4.0   gradient 1.0
+│   ├── w = 2.0   gradient 4.0
+│   └── w = 2.0   gradient 4.0
+└── 1.0
+"
+        );
+    }
+
+    #[test]
+    fn two_layer_forward_pass_needs_no_sizes() {
+        assert_eq!(
+            run("let inputs be a tensor with value [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]].
+let weights1 be a tensor with value [[1.0, 0.0, negative 1.0], [0.0, 1.0, 1.0]].
+let biases1 be a tensor with value [0.0, 0.0, negative 2.0].
+let weights2 be a tensor with value [[1.0], [1.0], [1.0]].
+let hidden be a tensor with value the result of relu with (the result of matmul with inputs and weights1) + biases1.
+let predictions be a tensor with value (the result of matmul with hidden and weights2) + 0.5.
+output hidden.
+output predictions.
+output the mean of predictions."),
+            "[ 1.0  2.0  0.0 ]
+[ 3.0  4.0  0.0 ]
+[ 5.0  6.0  0.0 ]
+[  3.5 ]
+[  7.5 ]
+[ 11.5 ]
+7.5
+"
+        );
+    }
+
+    #[test]
+    fn tensor_shapes_and_reductions() {
+        assert_eq!(
+            run("let grid be a tensor with value [[1, 2, 3], [4, 5, 6]].
+output the transpose of grid.
+output the result of sumAlong with grid and 0.
+output the result of meanAlong with grid and 1.
+output grid[1].
+let corner be a tensor with value grid[1][2].
+output the value of corner.
+let sizes be a list of standard number with value the shape of grid.
+output sizes[1].
+output the result of reshape with grid and 3 and 2.
+Multiply grid by 10.
+output the sum of grid.
+output the result of zeroTensor with 2 and 2."),
+            "[ 1.0  4.0 ]
+[ 2.0  5.0 ]
+[ 3.0  6.0 ]
+[ 5.0  7.0  9.0 ]
+[ 2.0  5.0 ]
+[ 4.0  5.0  6.0 ]
+6.0
+3
+[ 1.0  2.0 ]
+[ 3.0  4.0 ]
+[ 5.0  6.0 ]
+210.0
+[ 0.0  0.0 ]
+[ 0.0  0.0 ]
+"
+        );
+    }
+
+    #[test]
+    fn tensors_pass_through_functions() {
+        assert_eq!(
+            run("To double with a tensor values returning a tensor:
+    let twice be a tensor with value values * 2.
+    Give back twice.
+End.
+let result be a tensor with value [1.0, 2.0].
+For each i from 1 to 3,
+    Set result to the result of double with result.
+End.
+output result."),
+            "[ 8.0  16.0 ]\n"
+        );
+    }
+
+    #[test]
+    fn nudging_one_watched_decimal_leaves_its_copy_alone() {
+        assert_eq!(
+            run("let first be a watched decimal with value 1.0.
+let second be a watched decimal with value first.
+Add 5.0 to second.
+output first.
+output second."),
+            "1.0\n6.0\n"
+        );
+    }
+
+    #[test]
+    fn a_function_you_write_wins_over_a_built_in_with_its_name() {
+        assert_eq!(
+            run("To tanh with a watched decimal x returning a standard number:
+    Give back 7.
+End.
+To transpose with a tensor grid returning a standard number:
+    Give back 8.
+End.
+let w be a watched decimal with value 1.0.
+let t be a tensor with value [1.0].
+output the result of tanh with w.
+output the result of transpose with t."),
+            "7\n8\n"
         );
     }
 }

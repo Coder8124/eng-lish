@@ -98,8 +98,25 @@ the-form = "the result of" identifier [ "with" arguments ]
 | `the result of f with x and y` | Calls `f` with two arguments |
 | `the result of asking obj to method` | Calls a method and uses its answer |
 | `the width of box` | Reads a property |
+| `the gradient of w` / `the value of w` | Reads a `decimal` out of the watched decimal `w` |
+| `the shape of t` / `the value of t` | A tensor's sizes as a `list of standard number`, or its only number as a `decimal` |
+| `the sum of t` / `the mean of t` / `the transpose of t` | A tensor worked out from the tensor `t` |
 
 Property access is deliberately shallow: both the property and the object **must** be plain names. `the name of the owner of car` does not parse. **There is no dot syntax anywhere in eng-lish** — `box.width` is not valid.
+
+### Tensor functions
+
+| Call | Inputs | Result |
+|---|---|---|
+| `zeroTensor`, `oneTensor`, `randomTensor` | One or more whole-number sizes | A tensor of that shape filled with 0, 1, or standard-normal random numbers from a fixed seed |
+| `reshape` | A tensor, then one or more sizes | The same numbers in a new shape with the same count |
+| `matmul` (also `matrixMultiply`) | Two tensors with 1 or 2 dimensions | The matrix product; the first's last size **must** equal the second's first size |
+| `transpose` | A tensor | The dimensions reversed |
+| `sumAlong`, `meanAlong` | A tensor and a direction | The dimension at that direction added up (or averaged) and removed |
+| `sigmoid`, `relu`, `tanh`, `exponential`, `logarithm`, `softmax` | A tensor | Applied to each number; `softmax` works along the last dimension |
+| `power` | A tensor and a number | Each number raised to that power |
+
+`sigmoid`, `relu`, `softmax`, `power` and the other shared names mean the tensor versions only when their first input is a `tensor`. With a list they are the list built-ins. Indexing a tensor, `t[i]`, removes its first dimension.
 
 ## 3.6 Calls
 

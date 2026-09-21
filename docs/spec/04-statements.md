@@ -244,6 +244,27 @@ The data **must** be a list, and so **must** the `against` series. The words `ch
 
 The `to "file"` part is **required**, and both it and the title **must** be literal text, not a variable. If the kind is left out, a line chart is drawn.
 
-## 4.12 Statements made of an expression
+## 4.12 Gradients
+
+```ebnf
+gradients = "Find the" ( "gradients" | "gradient" ) "of" expression "."
+          | "show the graph of" expression "." ;
+```
+
+```
+let w be a watched decimal with value 0.5.
+let loss be a watched decimal with value (w * 3.0 - 6.0) * (w * 3.0 - 6.0).
+Find the gradients of loss.
+output the gradient of w.
+show the graph of loss.
+```
+
+The expression **must** be a `watched decimal`. `Find the gradients of` sets the gradient of every watched decimal that the expression was worked out from to the rate at which the expression changes as that value changes. It resets those gradients to zero first, so gradients never add up across two sentences. `show the graph of` prints each step of the working, one per line, with its gradient once one has been found.
+
+`sigmoid`, `relu`, `tanh`, `exponential`, `logarithm` and `power` (with a plain-number exponent) accept a watched decimal and produce one.
+
+An arithmetic sentence with a plain-number amount (`Subtract 0.1 from w.`) on a watched decimal that was declared directly with a number gives the variable a new watched decimal with the new value, keeping its name and gradient. Other variables that shared the old one, and results already worked out from it, are unchanged. When the target was itself worked out from other watched decimals, the sentence builds a new step instead. `Set w to 0.5.` always makes a new watched decimal.
+
+## 4.13 Statements made of an expression
 
 A sentence **may** consist of an expression alone, but only when it begins with a name. This means a sentence cannot start with `the`: `the result of f with 1.` is not a valid statement. Use `Call f with 1.` instead.

@@ -583,3 +583,58 @@ pub fn get_ml_builtins() -> Vec<BuiltinFunction> {
         },
     ]
 }
+
+/// Built-ins that also work on a watched decimal, keeping track of the
+/// gradient: (runtime function, number of inputs).
+pub fn watched_function(name: &str) -> Option<(&'static str, usize)> {
+    match name {
+        "sigmoid" | "applySigmoid" => Some(("englang_watched_sigmoid", 1)),
+        "relu" | "applyRelu" => Some(("englang_watched_relu", 1)),
+        "tanh" => Some(("englang_watched_tanh", 1)),
+        "exponential" | "exp" => Some(("englang_watched_exponential", 1)),
+        "logarithm" | "log" => Some(("englang_watched_logarithm", 1)),
+        "power" | "pow" => Some(("englang_watched_power", 2)),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TensorCall {
+    /// zeroTensor / oneTensor / randomTensor with sizes
+    Filled(i64),
+    /// reshape with a tensor and sizes
+    Reshape,
+    /// one tensor in, one out
+    Unary(&'static str),
+    /// power with a tensor and a number
+    Power,
+    /// two tensors in, one out
+    Binary(&'static str),
+    /// sumAlong / meanAlong with a tensor and a direction
+    Along(&'static str),
+}
+
+/// Functions that work on tensors: (what they do, whether the name only
+/// exists for tensors). Names shared with list built-ins, like `sigmoid`,
+/// only mean the tensor version when their first input is a tensor.
+pub fn tensor_function(name: &str) -> Option<(TensorCall, bool)> {
+    use TensorCall::*;
+    Some(match name {
+        "zeroTensor" => (Filled(0), true),
+        "oneTensor" => (Filled(1), true),
+        "randomTensor" => (Filled(2), true),
+        "reshape" => (Reshape, true),
+        "matmul" | "matrixMultiply" => (Binary("englang_tensor_matmul"), true),
+        "transpose" => (Unary("englang_tensor_transpose"), true),
+        "sumAlong" => (Along("englang_tensor_sum_along"), true),
+        "meanAlong" => (Along("englang_tensor_mean_along"), true),
+        "softmax" | "applySoftmax" => (Unary("englang_tensor_softmax"), false),
+        "power" | "pow" => (Power, false),
+        "sigmoid" | "applySigmoid" => (Unary("englang_tensor_sigmoid"), false),
+        "relu" | "applyRelu" => (Unary("englang_tensor_relu"), false),
+        "tanh" => (Unary("englang_tensor_tanh"), false),
+        "exponential" | "exp" => (Unary("englang_tensor_exponential"), false),
+        "logarithm" | "log" => (Unary("englang_tensor_logarithm"), false),
+        _ => return None,
+    })
+}

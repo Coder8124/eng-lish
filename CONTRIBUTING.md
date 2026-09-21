@@ -92,6 +92,7 @@ cargo run                   # then open http://127.0.0.1:8080
 | Folder | What is in it |
 |---|---|
 | `src/` | The compiler, in Rust |
+| `runtime/` | Built-in functions written in plain Rust, linked into every compiled program |
 | `packages/` | The standard library, written in eng-lish itself |
 | `examples/` | Runnable `.eng` programs, including games |
 | `docs/language-reference/` | Docs that teach a feature |
@@ -110,7 +111,8 @@ Inside `src/`, a program flows through the files in this order:
 | `codegen.rs` | Emits LLVM IR — by far the biggest file |
 | `stdlib.rs` | The table of built-in functions |
 | `tibasic.rs` | The alternate backend that produces TI-BASIC for calculators |
-| `main.rs` | The command line, `use` resolution, and linking |
+| `main.rs` | The command line and `use` resolution |
+| `link.rs` | Links a program against the runtime with clang |
 
 ## Where to make your change
 
@@ -122,7 +124,7 @@ Inside `src/`, a program flows through the files in this order:
 
 Use it from a program with `use "<name>".` — note that this only resolves against `packages/` when you run `englishc` from the repo root.
 
-**Adding a built-in function** means two files: register it in `src/stdlib.rs` (in whichever `get_*_builtins` group fits) and implement it in `src/codegen.rs`.
+**Adding a built-in function** means three steps: register it in `src/stdlib.rs` (in whichever `get_*_builtins` group fits), write it in plain Rust in `runtime/src/` as a `#[unsafe(no_mangle)] pub extern "C" fn englang_<name>`, and declare it in `src/codegen.rs` with `self.module.add_function("englang_<name>", fn_type, None)` — see `kMeans` for the pattern. `runtime/src/list.rs` reads and makes lists in the layout codegen expects. The runtime is compiled by `build.rs` with plain `rustc`, so it cannot use crates from crates.io. Many older built-ins are still written as LLVM IR directly in `codegen.rs`; new ones should go in the runtime.
 
 **Adding new syntax** is the big one, and usually touches five files in a row: `lexer.rs` for the keyword, `parser.rs` for the sentence shape, `ast.rs` for the node, `semantic.rs` for the type rules, and `codegen.rs` to emit it. Add it to `tibasic.rs` too if it is something a calculator could do. It also needs a `docs/spec/` update, because the spec is supposed to describe the real parser.
 
@@ -146,7 +148,7 @@ A feature is not finished until someone can learn it from the docs:
 
 ## Tests
 
-Tests live in a `#[cfg(test)] mod tests` block at the bottom of the file they test — see the blocks at the end of `lexer.rs`, `parser.rs`, `semantic.rs`, and `tibasic.rs`. Add yours to the file you changed and make sure `cargo test` passes before you open a pull request.
+Tests live in a `#[cfg(test)] mod tests` block at the bottom of the file they test — see the blocks at the end of `lexer.rs`, `parser.rs`, `semantic.rs`, and `tibasic.rs`. Add yours to the file you changed and make sure `cargo test --workspace` passes (that includes the runtime's tests) before you open a pull request.
 
 ## Commits and pull requests
 
